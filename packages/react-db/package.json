@@ -1,5 +1,5 @@
 {
-  "name": "@tanstack/react-db",
+  "name": "@autarcgmbh/react-db",
   "description": "React integration for @tanstack/db",
   "version": "0.1.20",
   "author": "Kyle Mathews",
@@ -17,7 +17,7 @@
   ],
   "packageManager": "pnpm@10.6.3",
   "dependencies": {
-    "@tanstack/db": "workspace:*",
+    "@autarcgmbh/db": "workspace:*",
     "use-sync-external-store": "^1.5.0"
   },
   "devDependencies": {

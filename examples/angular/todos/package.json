@@ -28,8 +28,8 @@
     "@angular/forms": "^20.1.0",
     "@angular/platform-browser": "^20.1.0",
     "@angular/router": "^20.1.0",
-    "@tanstack/angular-db": "workspace:*",
-    "@tanstack/db": "workspace:*",
+    "@autarcgmbh/angular-db": "workspace:*",
+    "@autarcgmbh/db": "workspace:*",
     "rxjs": "~7.8.0",
     "tslib": "^2.3.0",
     "zone.js": "~0.15.0"

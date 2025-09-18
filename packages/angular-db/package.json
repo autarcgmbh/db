@@ -1,5 +1,5 @@
 {
-  "name": "@tanstack/angular-db",
+  "name": "@autarcgmbh/angular-db",
   "description": "Angular integration for @tanstack/db",
   "version": "0.1.3",
   "author": "Ethan McDaniel",
@@ -17,7 +17,7 @@
   ],
   "packageManager": "pnpm@10.6.3",
   "dependencies": {
-    "@tanstack/db": "workspace:*"
+    "@autarcgmbh/db": "workspace:*"
   },
   "devDependencies": {
     "@angular/common": "^19.0.0",

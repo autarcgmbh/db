@@ -1,5 +1,5 @@
 {
-  "name": "@tanstack/solid-db",
+  "name": "@autarcgmbh/solid-db",
   "description": "Solid integration for @tanstack/db",
   "version": "0.1.20",
   "author": "Kyle Mathews",
@@ -18,7 +18,7 @@
   "packageManager": "pnpm@10.6.3",
   "dependencies": {
     "@solid-primitives/map": "^0.7.2",
-    "@tanstack/db": "workspace:*"
+    "@autarcgmbh/db": "workspace:*"
   },
   "devDependencies": {
     "@electric-sql/client": "1.0.0",

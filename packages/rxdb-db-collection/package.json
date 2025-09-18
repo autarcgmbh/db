@@ -1,11 +1,11 @@
 {
-  "name": "@tanstack/rxdb-db-collection",
+  "name": "@autarcgmbh/rxdb-db-collection",
   "description": "RxDB collection for TanStack DB",
   "version": "0.1.9",
   "dependencies": {
     "rxdb": "16.17.2",
     "@standard-schema/spec": "^1.0.0",
-    "@tanstack/db": "workspace:*",
+    "@autarcgmbh/db": "workspace:*",
     "@tanstack/store": "^0.7.0",
     "debug": "^4.4.1"
   },

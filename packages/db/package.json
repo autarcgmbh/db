@@ -1,10 +1,10 @@
 {
-  "name": "@tanstack/db",
+  "name": "@autarcgmbh/db",
   "description": "A reactive client store for building super fast apps on sync",
   "version": "0.3.1",
   "dependencies": {
     "@standard-schema/spec": "^1.0.0",
-    "@tanstack/db-ivm": "workspace:*",
+    "@autarcgmbh/db-ivm": "workspace:*",
     "@tanstack/query-db-collection": "catalog:",
     "@tanstack/react-db": "catalog:"
   },

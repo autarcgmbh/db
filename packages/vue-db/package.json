@@ -1,5 +1,5 @@
 {
-  "name": "@tanstack/vue-db",
+  "name": "@autarcgmbh/vue-db",
   "description": "Vue integration for @tanstack/db",
   "version": "0.0.53",
   "author": "Kyle Mathews",
@@ -17,7 +17,7 @@
   ],
   "packageManager": "pnpm@10.6.3",
   "dependencies": {
-    "@tanstack/db": "workspace:*"
+    "@autarcgmbh/db": "workspace:*"
   },
   "devDependencies": {
     "@electric-sql/client": "1.0.0",

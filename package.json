@@ -1,5 +1,5 @@
 {
-  "name": "@tanstack/db-monorepo",
+  "name": "@autarcgmbh/db-monorepo",
   "private": true,
   "description": "Reactive client queryable store for sync-first applications",
   "version": "0.0.0",
@@ -76,9 +76,9 @@
     "examples/react/*"
   ],
   "overrides": {
-    "@tanstack/db": "workspace:*",
-    "@tanstack/db-ivm": "workspace:*",
-    "@tanstack/react-db": "workspace:*",
-    "@tanstack/vue-db": "workspace:*"
+    "@autarcgmbh/db": "workspace:*",
+    "@autarcgmbh/db-ivm": "workspace:*",
+    "@autarcgmbh/react-db": "workspace:*",
+    "@autarcgmbh/vue-db": "workspace:*"
   }
 }

@@ -1,5 +1,5 @@
 {
-  "name": "@tanstack/db-ivm",
+  "name": "@autarcgmbh/db-ivm",
   "description": "Incremental View Maintenance for TanStack DB based on Differential Dataflow",
   "version": "0.1.7",
   "dependencies": {
