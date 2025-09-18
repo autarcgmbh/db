@@ -1,12 +1,12 @@
 {
-  "name": "@tanstack/offline-transactions",
+  "name": "@autarcgmbh/offline-transactions",
   "version": "0.0.1",
   "description": "Offline-first transaction capabilities for TanStack DB",
-  "author": "TanStack",
+  "author": "Autarc GmbH",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/TanStack/db.git",
+    "url": "https://github.com/autarcgmbh/db.git",
     "directory": "packages/offline-transactions"
   },
   "publishConfig": {
@@ -43,8 +43,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src"
   },
-  "dependencies": {
-    "@tanstack/db": "workspace:*"
+  "peerDependencies": {
+    "@tanstack/db": "^0.3.1"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
@@ -52,8 +52,5 @@
     "tsup": "^8.0.0",
     "typescript": "^5.5.4",
     "vitest": "^2.0.0"
-  },
-  "peerDependencies": {
-    "@tanstack/db": "workspace:*"
   }
 }

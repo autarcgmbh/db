@@ -19,7 +19,7 @@ export function createOfflineAction<T>(
         mutationFnName,
         autoCommit: true,
       },
-      mutationFn,
+      mutationFn as any,
       persistTransaction
     )
 

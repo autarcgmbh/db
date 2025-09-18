@@ -1,9 +1,8 @@
 import { createTransaction } from "@tanstack/db"
 import { NonRetriableError } from "../types"
-import type { Transaction } from "@tanstack/db"
+import type { MutationFn, Transaction } from "@tanstack/db"
 import type {
   CreateOfflineTransactionOptions,
-  MutationFn,
   OfflineTransaction as OfflineTransactionType,
 } from "../types"
 
@@ -14,7 +13,7 @@ export class OfflineTransaction {
   private idempotencyKey: string
   private metadata: Record<string, any>
   private transaction: Transaction | null = null
-  private mutationFn: MutationFn
+  private mutationFn: any
   private persistTransaction: (tx: OfflineTransactionType) => Promise<void>
 
   constructor(

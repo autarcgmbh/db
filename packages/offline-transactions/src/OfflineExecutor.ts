@@ -152,7 +152,7 @@ export class OfflineExecutor {
   createOfflineTransaction(
     options: CreateOfflineTransactionOptions
   ): OfflineTransactionAPI {
-    const mutationFn = this.config.mutationFns[options.mutationFnName]
+    const mutationFn = this.config.mutationFns[options.mutationFnName] as any
 
     if (!mutationFn) {
       throw new Error(`Unknown mutation function: ${options.mutationFnName}`)
