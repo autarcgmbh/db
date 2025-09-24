@@ -2,14 +2,15 @@ import { OfflineTransaction } from "./OfflineTransaction"
 import type { Transaction } from "@tanstack/db"
 import type {
   CreateOfflineActionOptions,
-  MutationFn,
+  OfflineMutationFn,
   OfflineTransaction as OfflineTransactionType,
 } from "../types"
 
 export function createOfflineAction<T>(
   options: CreateOfflineActionOptions<T>,
-  mutationFn: MutationFn,
-  persistTransaction: (tx: OfflineTransactionType) => Promise<void>
+  mutationFn: OfflineMutationFn,
+  persistTransaction: (tx: OfflineTransactionType) => Promise<void>,
+  executor: any
 ): (variables: T) => Transaction {
   const { mutationFnName, onMutate } = options
 
@@ -19,8 +20,9 @@ export function createOfflineAction<T>(
         mutationFnName,
         autoCommit: true,
       },
-      mutationFn as any,
-      persistTransaction
+      mutationFn,
+      persistTransaction,
+      executor
     )
 
     return offlineTransaction.mutate(() => {

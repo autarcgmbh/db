@@ -1,14 +1,19 @@
-import type { Collection } from "@tanstack/db"
+import type {
+  Collection,
+  MutationFnParams,
+  PendingMutation,
+} from "@tanstack/db"
 
 // Extended mutation function that includes idempotency key
-export type MutationFn = (params: {
-  transaction: {
-    id: string
-    mutations: Array<any>
-    metadata: Record<string, any>
-  }
+export type OfflineMutationFnParams<
+  T extends object = Record<string, unknown>,
+> = MutationFnParams<T> & {
   idempotencyKey: string
-}) => Promise<any>
+}
+
+export type OfflineMutationFn<T extends object = Record<string, unknown>> = (
+  params: OfflineMutationFnParams<T>
+) => Promise<any>
 
 // Simplified mutation structure for serialization
 export interface SerializedMutation {
@@ -25,7 +30,23 @@ export interface SerializedError {
   stack?: string
 }
 
+// In-memory representation with full PendingMutation objects
 export interface OfflineTransaction {
+  id: string
+  mutationFnName: string
+  mutations: Array<PendingMutation>
+  keys: Array<string>
+  idempotencyKey: string
+  createdAt: Date
+  retryCount: number
+  nextAttemptAt: number
+  lastError?: SerializedError
+  metadata?: Record<string, any>
+  version: 1
+}
+
+// Serialized representation for storage
+export interface SerializedOfflineTransaction {
   id: string
   mutationFnName: string
   mutations: Array<SerializedMutation>
@@ -41,7 +62,7 @@ export interface OfflineTransaction {
 
 export interface OfflineConfig {
   collections: Record<string, Collection>
-  mutationFns: Record<string, MutationFn>
+  mutationFns: Record<string, OfflineMutationFn>
   storage?: StorageAdapter
   maxConcurrency?: number
   jitter?: boolean
@@ -50,6 +71,7 @@ export interface OfflineConfig {
   ) => Array<OfflineTransaction>
   onUnknownMutationFn?: (name: string, tx: OfflineTransaction) => void
   onLeadershipChange?: (isLeader: boolean) => void
+  leaderElection?: LeaderElection
 }
 
 export interface StorageAdapter {
