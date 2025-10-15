@@ -458,11 +458,14 @@ function createElectricSync<T extends Row<unknown>>(
     sync: (params: Parameters<SyncConfig<T>[`sync`]>[0]) => {
       const { begin, write, commit, markReady, truncate, collection } = params
 
+      console.info(`persistence:`, persistence)
       // Load from localStorage if persistence is configured
       if (persistence) {
         const storage =
           persistence.storage ||
           (typeof window !== `undefined` ? window.localStorage : null)
+
+        console.info(`storage`, storage)
 
         if (storage) {
           try {
@@ -476,6 +479,7 @@ function createElectricSync<T extends Row<unknown>>(
                 if (!entries.length) {
                   begin()
                   entries.forEach(([_, value]) => {
+                    console.info(`valves storage recover`, value)
                     if (value) write({ type: `insert`, value: value as T })
                   })
                   commit()
