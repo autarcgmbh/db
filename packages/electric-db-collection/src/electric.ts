@@ -183,6 +183,7 @@ export function electricCollectionOptions(
 } {
   const seenTxids = new Store<Set<Txid>>(new Set([]))
 
+  console.info(`Electric collection options sync?`)
   const sync = createElectricSync<any>(config.shapeOptions, {
     seenTxids,
     persistence: config.persistence,
@@ -453,12 +454,13 @@ function createElectricSync<T extends Row<unknown>>(
 
   let unsubscribeStream: () => void
 
+  console.info(`Creating electric sync`, persistence)
   return {
     // Sync is called once on collection init
     sync: (params: Parameters<SyncConfig<T>[`sync`]>[0]) => {
       const { begin, write, commit, markReady, truncate, collection } = params
+      console.info(`Initial sync peristance`, persistence)
 
-      console.info(`persistence:`, persistence)
       // Load from localStorage if persistence is configured
       if (persistence) {
         const storage =
@@ -470,14 +472,17 @@ function createElectricSync<T extends Row<unknown>>(
         if (storage) {
           try {
             const rawData = storage.getItem(persistence.storageKey)
+            console.info(`rawData storage sync`, rawData)
             if (rawData) {
               const parsed = JSON.parse(rawData)
-
+              console.info(`parsed storage sync`, rawData)
               if (parsed) {
                 const entries = Object.entries(parsed)
-
-                if (!entries.length) {
+                console.info(`entries`, entries)
+                if (entries.length) {
+                  console.info(`entries lengths`, entries.length)
                   begin()
+                  console.info(`begin`, entries.length)
                   entries.forEach(([_, value]) => {
                     console.info(`valves storage recover`, value)
                     if (value) write({ type: `insert`, value: value as T })

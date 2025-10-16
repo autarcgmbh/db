@@ -322,7 +322,7 @@ importers:
 
   examples/react/todo:
     dependencies:
-      '@tanstack/electric-db-collection':
+      '@autarcgmbh/electric-db-collection':
         specifier: workspace:^
         version: link:../../../packages/electric-db-collection
       '@tanstack/query-core':
@@ -628,8 +628,8 @@ importers:
         specifier: ^1.0.0
         version: 1.0.0
       '@tanstack/db':
-        specifier: workspace:*
-        version: link:../db
+        specifier: 0.3.0
+        version: 0.3.0(typescript@5.9.2)
       '@tanstack/store':
         specifier: ^0.7.5
         version: 0.7.5
@@ -3334,6 +3334,11 @@ packages:
     resolution: {integrity: sha512-fvhOAY0FMw8F7O4RLVSje7thdKM0R1Es6k4wPkDG4m518UJijgL9ysZO8L+YmeEeldK81jZtMdRcGUOc0goa2g==}
     engines: {node: '>=18'}
 
+  '@tanstack/db-ivm@0.1.7':
+    resolution: {integrity: sha512-6RUAtBjNZRB6n+E2lQxyTTO7PD4vaAoQdtkfNqq+vgSY0+zWATNVGn6pGp4dRJmTS3ueDB72WhMR/q6LGmuxfA==}
+    peerDependencies:
+      typescript: '>=4.7'
+
   '@tanstack/db@0.0.27':
     resolution: {integrity: sha512-zFrfYxBF+8zbxlp0nXtcJnLaj0ZN5sxij3F0r+mVFVC1GNHcgJFZp81RuMJbx9nuC4c2h3P9r2Mb81e6wnJyeA==}
     peerDependencies:
@@ -3341,6 +3346,11 @@ packages:
 
   '@tanstack/db@0.0.33':
     resolution: {integrity: sha512-G5h2dlrC3CFtZIBqnfb4Zgyvcl1XqHrKwT8itbrLGUirEcZ6n/ck5iClDROyondc7Z3qk+qHURMTprLlWR698A==}
+    peerDependencies:
+      typescript: '>=4.7'
+
+  '@tanstack/db@0.3.0':
+    resolution: {integrity: sha512-crw/ZFVV3Zvj+HFgZs52ST3W/dZGbruWx81uKPzv+BfePVao17V10XSkm5ejHzwc0do2vnEjtcr7DIR7mQJ3gQ==}
     peerDependencies:
       typescript: '>=4.7'
 
@@ -11825,6 +11835,12 @@ snapshots:
       - typescript
       - vite
 
+  '@tanstack/db-ivm@0.1.7(typescript@5.9.2)':
+    dependencies:
+      fractional-indexing: 3.2.0
+      sorted-btree: 1.8.1
+      typescript: 5.9.2
+
   '@tanstack/db@0.0.27(typescript@5.9.2)':
     dependencies:
       '@electric-sql/d2mini': 0.1.8
@@ -11835,6 +11851,12 @@ snapshots:
     dependencies:
       '@electric-sql/d2mini': 0.1.8
       '@standard-schema/spec': 1.0.0
+      typescript: 5.9.2
+
+  '@tanstack/db@0.3.0(typescript@5.9.2)':
+    dependencies:
+      '@standard-schema/spec': 1.0.0
+      '@tanstack/db-ivm': 0.1.7(typescript@5.9.2)
       typescript: 5.9.2
 
   '@tanstack/directive-functions-plugin@1.131.2(vite@6.3.6(@types/node@22.18.1)(jiti@2.5.1)(lightningcss@1.30.1)(sass@1.90.0)(terser@5.44.0)(tsx@4.20.5)(yaml@2.8.1))':
