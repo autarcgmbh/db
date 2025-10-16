@@ -568,6 +568,11 @@ function createElectricSync<T extends Row<unknown>>(
               transactionStarted = true
             }
 
+            console.info(
+              `shape stream is trying to write: `,
+              message.value,
+              message.headers
+            )
             write({
               type: message.headers.operation,
               value: message.value,
