@@ -28,6 +28,7 @@ import type {
   ControlMessage,
   GetExtensions,
   Message,
+  Offset,
   Row,
   ShapeStreamOptions,
 } from "@electric-sql/client"
@@ -142,6 +143,116 @@ export interface ElectricCollectionUtilsWithPersistence
   getPersistenceSize: GetPersistenceSizeFn
 }
 
+export interface ElectricPersistenceConfig {
+  storageKey: string
+  storage?: StorageApi
+}
+
+export interface ElectricCollectionConfig<
+  T extends Row<unknown> = Row<unknown>,
+  TSchema extends StandardSchemaV1 = never,
+> extends BaseCollectionConfig<
+    T,
+    string | number,
+    TSchema,
+    Record<string, Fn>,
+    { txid: Txid | Array<Txid> }
+  > {
+  shapeOptions: ShapeStreamOptions<GetExtensions<T>>
+  persistence?: ElectricPersistenceConfig
+}
+
+// Envelope we persist to storage
+type PersistedEnvelope<T> = {
+  v: 1
+  value: Record<string, T>
+  lastOffset?: number
+  shapeHandle?: string
+}
+
+function createPersistence<T>(cfg: ElectricPersistenceConfig) {
+  const key = cfg.storageKey
+  const storage =
+    cfg.storage || (typeof window !== `undefined` ? window.localStorage : null)
+
+  const safeParse = (raw: string | null): PersistedEnvelope<T> | null => {
+    if (!raw) return null
+    try {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === `object` && parsed.v === 1) {
+        return parsed as PersistedEnvelope<T>
+      }
+      return null
+    } catch {
+      return null
+    }
+  }
+
+  const read = (): PersistedEnvelope<T> | null => {
+    if (!storage) return null
+    return safeParse(storage.getItem(key))
+  }
+
+  const write = (next: PersistedEnvelope<T>) => {
+    if (!storage) return
+    storage.setItem(key, JSON.stringify(next))
+  }
+
+  const clear = () => {
+    if (!storage) return
+    storage.removeItem(key)
+  }
+
+  const size = (): number => {
+    if (!storage) return 0
+    const data = storage.getItem(key)
+    return data ? new Blob([data]).size : 0
+  }
+
+  const saveCollectionSnapshot = (collection: any, stream?: any) => {
+    if (!storage) return
+    // 1) snapshot collection state
+    const value: Record<string, T> = {}
+    for (const [k, v] of collection.state) value[String(k)] = v as T
+
+    // 2) load previous envelope (to preserve cursor when no stream present)
+    const prev = read() ?? { v: 1, value: {} as Record<string, T> }
+
+    // 3) only advance cursor if we’re called from the stream
+    const lastOffset =
+      (stream?.lastOffset as number | undefined) ?? prev.lastOffset
+    const shapeHandle = stream?.shapeHandle ?? prev.shapeHandle
+
+    const next: PersistedEnvelope<T> = { v: 1, value, lastOffset, shapeHandle }
+    write(next)
+  }
+
+  const loadSnapshotInto = (
+    begin: () => void,
+    writeOp: (op: { type: `insert`; value: T }) => void,
+    commit: () => void
+  ) => {
+    const env = read()
+    if (!env?.value) return
+    const entries = Object.entries(env.value)
+    if (!entries.length) return
+    begin()
+    for (const [, row] of entries) {
+      writeOp({ type: `insert`, value: row })
+    }
+    commit()
+  }
+
+  return {
+    read,
+    write,
+    clear,
+    size,
+    saveCollectionSnapshot,
+    loadSnapshotInto,
+  }
+}
+
 /**
  * Creates Electric collection options for use with a standard Collection
  *
@@ -182,6 +293,8 @@ export function electricCollectionOptions(
   schema?: any
 } {
   const seenTxids = new Store<Set<Txid>>(new Set([]))
+  const persistence =
+    config.persistence && createPersistence<any>(config.persistence)
 
   console.info(`Electric collection options sync?`)
   const sync = createElectricSync<any>(config.shapeOptions, {
@@ -225,51 +338,20 @@ export function electricCollectionOptions(
     })
   }
 
-  // Helper function to save to localStorage if persistence is configured
-  // Reads from collection's in-memory state at save time
-  const persistToStorage = (collection: any) => {
-    if (!config.persistence) return
-
-    const storage =
-      config.persistence.storage ||
-      (typeof window !== `undefined` ? window.localStorage : null)
-
-    if (!storage) return
-
-    return {
-      save: () => {
-        // Read directly from collection's in-memory state
-        const dataToSave: Record<string, any> = {}
-
-        // Could just save the collection state directly
-        for (const [key, value] of collection.state) {
-          dataToSave[String(key)] = value
-        }
-
-        const serialized = JSON.stringify(dataToSave)
-        storage.setItem(config.persistence!.storageKey, serialized)
-      },
-    }
-  }
-
-  // Create wrapper handlers for direct persistence operations that handle txid awaiting
   const wrappedOnInsert = config.onInsert
     ? async (params: InsertMutationFnParams<any>) => {
         // Validate that all values in the transaction can be JSON serialized (if persistence enabled)
         if (config.persistence) {
-          params.transaction.mutations.forEach((mutation) => {
-            validateJsonSerializable(mutation.modified, `insert`)
-          })
+          params.transaction.mutations.forEach((m) =>
+            validateJsonSerializable(m.modified, `insert`)
+          )
         }
-
         // Runtime check (that doesn't follow type)
         // eslint-disable-next-line
         const handlerResult = (await config.onInsert!(params)) ?? {}
         const txid = (handlerResult as { txid?: Txid | Array<Txid> }).txid
 
-        if (!txid) {
-          throw new ElectricInsertHandlerMustReturnTxIdError()
-        }
+        if (!txid) throw new ElectricInsertHandlerMustReturnTxIdError()
 
         // Handle both single txid and array of txids
         if (Array.isArray(txid)) {
@@ -278,36 +360,28 @@ export function electricCollectionOptions(
           await awaitTxId(txid)
         }
 
-        // Persist to storage if configured
-        if (config.persistence) {
-          const persistence = persistToStorage(params.collection)
-          if (persistence) {
-            // Save collection state to localStorage
-            persistence.save()
-          }
+        if (persistence) {
+          // called outside stream -> snapshot rows, keep prior cursor
+          persistence.saveCollectionSnapshot(params.collection)
         }
-
         return handlerResult
       }
     : undefined
 
+  // Create wrapper handlers for direct persistence operations that handle txid awaiting
   const wrappedOnUpdate = config.onUpdate
     ? async (params: UpdateMutationFnParams<any>) => {
         // Validate that all values in the transaction can be JSON serialized (if persistence enabled)
         if (config.persistence) {
-          params.transaction.mutations.forEach((mutation) => {
-            validateJsonSerializable(mutation.modified, `update`)
-          })
+          params.transaction.mutations.forEach((m) =>
+            validateJsonSerializable(m.modified, `update`)
+          )
         }
-
         // Runtime check (that doesn't follow type)
         // eslint-disable-next-line
         const handlerResult = (await config.onUpdate!(params)) ?? {}
         const txid = (handlerResult as { txid?: Txid | Array<Txid> }).txid
-
-        if (!txid) {
-          throw new ElectricUpdateHandlerMustReturnTxIdError()
-        }
+        if (!txid) throw new ElectricUpdateHandlerMustReturnTxIdError()
 
         // Handle both single txid and array of txids
         if (Array.isArray(txid)) {
@@ -316,13 +390,8 @@ export function electricCollectionOptions(
           await awaitTxId(txid)
         }
 
-        // Persist to storage if configured
-        if (config.persistence) {
-          const persistence = persistToStorage(params.collection)
-          if (persistence) {
-            // Save collection state to localStorage
-            persistence.save()
-          }
+        if (persistence) {
+          persistence.saveCollectionSnapshot(params.collection)
         }
 
         return handlerResult
@@ -332,62 +401,35 @@ export function electricCollectionOptions(
   const wrappedOnDelete = config.onDelete
     ? async (params: DeleteMutationFnParams<any>) => {
         const handlerResult = await config.onDelete!(params)
-        if (!handlerResult.txid) {
-          throw new ElectricDeleteHandlerMustReturnTxIdError()
-        }
+        const txid = handlerResult.txid
 
+        if (!txid) throw new ElectricDeleteHandlerMustReturnTxIdError()
         // Handle both single txid and array of txids
         if (Array.isArray(handlerResult.txid)) {
           await Promise.all(handlerResult.txid.map((id) => awaitTxId(id)))
         } else {
           await awaitTxId(handlerResult.txid)
         }
-
         // Persist to storage if configured
-        if (config.persistence) {
-          const persistence = persistToStorage(params.collection)
-          if (persistence) {
-            // Save collection state to localStorage
-            persistence.save()
-          }
+        if (persistence) {
+          // Save collection state to localStorage
+          persistence.saveCollectionSnapshot(params.collection)
         }
-
         return handlerResult
       }
     : undefined
 
-  // Utility functions for persistence
-  const clearPersistence: ClearPersistenceFn = async (): Promise<void> => {
-    if (!config.persistence) {
+  // eslint-disable-next-line @typescript-eslint/require-await
+  const clearPersistence: ClearPersistenceFn = async () => {
+    if (!persistence) {
       throw new Error(`Persistence is not configured for this collection`)
     }
-
-    const storage =
-      config.persistence.storage ||
-      (typeof window !== `undefined` ? window.localStorage : null)
-
-    if (storage) {
-      storage.removeItem(config.persistence.storageKey)
-    }
+    persistence.clear()
   }
 
-  const getPersistenceSize: GetPersistenceSizeFn =
-    async (): Promise<number> => {
-      if (!config.persistence) {
-        return 0
-      }
-
-      const storage =
-        config.persistence.storage ||
-        (typeof window !== `undefined` ? window.localStorage : null)
-
-      if (!storage) {
-        return 0
-      }
-
-      const data = storage.getItem(config.persistence.storageKey)
-      return data ? new Blob([data]).size : 0
-    }
+  // eslint-disable-next-line @typescript-eslint/require-await
+  const getPersistenceSize: GetPersistenceSizeFn = async () =>
+    persistence ? persistence.size() : 0
 
   // Extract standard Collection config properties
   const {
@@ -402,15 +444,9 @@ export function electricCollectionOptions(
   // Build utils object based on whether persistence is configured
   const utils:
     | ElectricCollectionUtils
-    | ElectricCollectionUtilsWithPersistence = config.persistence
-    ? {
-        awaitTxId,
-        clearPersistence,
-        getPersistenceSize,
-      }
-    : {
-        awaitTxId,
-      }
+    | ElectricCollectionUtilsWithPersistence = persistence
+    ? { awaitTxId, clearPersistence, getPersistenceSize }
+    : { awaitTxId }
 
   return {
     ...restConfig,
@@ -432,7 +468,9 @@ function createElectricSync<T extends Row<unknown>>(
     persistence?: ElectricPersistenceConfig
   }
 ): SyncConfig<T> {
-  const { seenTxids, persistence } = options
+  const { seenTxids, persistence: persistenceConfig } = options
+  const persistence =
+    persistenceConfig && createPersistence<T>(persistenceConfig)
 
   // Store for the relation schema information
   const relationSchema = new Store<string | undefined>(undefined)
@@ -454,49 +492,19 @@ function createElectricSync<T extends Row<unknown>>(
 
   let unsubscribeStream: () => void
 
-  console.info(`Creating electric sync`, persistence)
+  console.info(`Creating electric sync`, persistenceConfig)
   return {
     // Sync is called once on collection init
     sync: (params: Parameters<SyncConfig<T>[`sync`]>[0]) => {
       const { begin, write, commit, markReady, truncate, collection } = params
-      console.info(`Initial sync peristance`, persistence)
+      console.info(`Initial sync peristance`, persistenceConfig)
 
       // Load from localStorage if persistence is configured
       if (persistence) {
-        const storage =
-          persistence.storage ||
-          (typeof window !== `undefined` ? window.localStorage : null)
-
-        console.info(`storage`, storage)
-
-        if (storage) {
-          try {
-            const rawData = storage.getItem(persistence.storageKey)
-            console.info(`rawData storage sync`, rawData)
-            if (rawData) {
-              const parsed = JSON.parse(rawData)
-              console.info(`parsed storage sync`, rawData)
-              if (parsed) {
-                const entries = Object.entries(parsed)
-                console.info(`entries`, entries)
-                if (entries.length) {
-                  console.info(`entries lengths`, entries.length)
-                  begin()
-                  console.info(`begin`, entries.length)
-                  entries.forEach(([_, value]) => {
-                    console.info(`valves storage recover`, value)
-                    if (value) write({ type: `insert`, value: value as T })
-                  })
-                  commit()
-                }
-              }
-            }
-          } catch (error) {
-            console.warn(
-              `[ElectricPersistence] Error loading data from storage:`,
-              error
-            )
-          }
+        try {
+          persistence.loadSnapshotInto(begin, (op) => write(op), commit)
+        } catch (e) {
+          console.warn(`[ElectricPersistence] load error`, e)
         }
       }
 
@@ -518,8 +526,17 @@ function createElectricSync<T extends Row<unknown>>(
         }
       }
 
+      const prev = persistence?.read()
+      const computedOffset: Offset | undefined =
+        (shapeOptions as any).offset ?? prev?.lastOffset
+
+      const computedHandle: string =
+        (shapeOptions as any).shapeHandle ?? prev?.shapeHandle
+
       const stream = new ShapeStream({
         ...shapeOptions,
+        offset: computedOffset,
+        handle: computedHandle,
         signal: abortController.signal,
         onError: (errorParams) => {
           // Just immediately mark ready if there's an error to avoid blocking
@@ -583,7 +600,7 @@ function createElectricSync<T extends Row<unknown>>(
             })
 
             // Track synced changes for persistence
-            if (persistence) hasSyncedChanges = true
+            if (persistenceConfig) hasSyncedChanges = true
           } else if (isUpToDateMessage(message)) {
             hasUpToDate = true
           } else if (isMustRefetchMessage(message)) {
@@ -600,14 +617,7 @@ function createElectricSync<T extends Row<unknown>>(
             truncate()
 
             // Clear persistence storage on truncate
-            if (persistence) {
-              const storage =
-                persistence.storage ||
-                (typeof window !== `undefined` ? window.localStorage : null)
-              if (storage) {
-                storage.removeItem(persistence.storageKey)
-              }
-            }
+            if (persistence) persistence.clear()
 
             // Reset hasUpToDate so we continue accumulating changes until next up-to-date
             hasUpToDate = false
@@ -623,21 +633,7 @@ function createElectricSync<T extends Row<unknown>>(
 
           // Persist synced changes to storage
           if (persistence && hasSyncedChanges) {
-            const storage =
-              persistence.storage ||
-              (typeof window !== `undefined` ? window.localStorage : null)
-
-            if (storage) {
-              // Read current collection state and save to localStorage
-              const dataToSave: Record<string, T> = {}
-
-              for (const [key, value] of collection.state) {
-                dataToSave[String(key)] = value
-              }
-
-              const serialized = JSON.stringify(dataToSave)
-              storage.setItem(persistence.storageKey, serialized)
-            }
+            persistence.saveCollectionSnapshot(collection, stream)
           }
 
           // Mark the collection as ready now that sync is up to date
