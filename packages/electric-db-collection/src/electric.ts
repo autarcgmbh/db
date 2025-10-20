@@ -128,10 +128,28 @@ export type ClearPersistenceFn = () => Promise<void>
 export type GetPersistenceSizeFn = () => Promise<number>
 
 /**
+ * Type for the pause stream utility function
+ */
+export type PauseStreamFn = () => void
+
+/**
+ * Type for the resume stream utility function
+ */
+export type ResumeStreamFn = () => void
+
+/**
+ * Type for the isStreamPaused utility function
+ */
+export type IsStreamPausedFn = () => boolean
+
+/**
  * Electric collection utilities type
  */
 export interface ElectricCollectionUtils extends UtilsRecord {
   awaitTxId: AwaitTxIdFn
+  pauseStream: PauseStreamFn
+  resumeStream: ResumeStreamFn
+  isStreamPaused: IsStreamPausedFn
 }
 
 /**
@@ -141,6 +159,9 @@ export interface ElectricCollectionUtilsWithPersistence
   extends ElectricCollectionUtils {
   clearPersistence: ClearPersistenceFn
   getPersistenceSize: GetPersistenceSizeFn
+  pauseStream: PauseStreamFn
+  resumeStream: ResumeStreamFn
+  isStreamPaused: IsStreamPausedFn
 }
 
 export interface ElectricPersistenceConfig {
@@ -296,10 +317,20 @@ export function electricCollectionOptions(
   const persistence =
     config.persistence && createPersistence<any>(config.persistence)
 
+  // Stream control functions that will be set by the sync function
+  let pauseStreamFn: (() => void) | null = null
+  let resumeStreamFn: (() => void) | null = null
+  let isStreamPausedFn: (() => boolean) | null = null
+
   console.info(`Electric collection options sync?`)
   const sync = createElectricSync<any>(config.shapeOptions, {
     seenTxids,
     persistence: config.persistence,
+    setStreamControls: (pause, resume, isPaused) => {
+      pauseStreamFn = pause
+      resumeStreamFn = resume
+      isStreamPausedFn = isPaused
+    },
   })
 
   /**
@@ -431,6 +462,42 @@ export function electricCollectionOptions(
   const getPersistenceSize: GetPersistenceSizeFn = async () =>
     persistence ? persistence.size() : 0
 
+  /**
+   * Pause the shape stream - stops receiving updates from Electric
+   */
+  const pauseStream: PauseStreamFn = () => {
+    if (!pauseStreamFn) {
+      throw new Error(
+        `Stream not initialized yet. Make sure sync() has been called.`
+      )
+    }
+    pauseStreamFn()
+  }
+
+  /**
+   * Resume the shape stream - starts receiving updates from Electric again
+   */
+  const resumeStream: ResumeStreamFn = () => {
+    if (!resumeStreamFn) {
+      throw new Error(
+        `Stream not initialized yet. Make sure sync() has been called.`
+      )
+    }
+    resumeStreamFn()
+  }
+
+  /**
+   * Check if the stream is currently paused
+   */
+  const isStreamPaused: IsStreamPausedFn = () => {
+    if (!isStreamPausedFn) {
+      throw new Error(
+        `Stream not initialized yet. Make sure sync() has been called.`
+      )
+    }
+    return isStreamPausedFn()
+  }
+
   // Extract standard Collection config properties
   const {
     shapeOptions: _shapeOptions,
@@ -445,8 +512,15 @@ export function electricCollectionOptions(
   const utils:
     | ElectricCollectionUtils
     | ElectricCollectionUtilsWithPersistence = persistence
-    ? { awaitTxId, clearPersistence, getPersistenceSize }
-    : { awaitTxId }
+    ? {
+        awaitTxId,
+        clearPersistence,
+        getPersistenceSize,
+        pauseStream,
+        resumeStream,
+        isStreamPaused,
+      }
+    : { awaitTxId, pauseStream, resumeStream, isStreamPaused }
 
   return {
     ...restConfig,
@@ -466,9 +540,18 @@ function createElectricSync<T extends Row<unknown>>(
   options: {
     seenTxids: Store<Set<Txid>>
     persistence?: ElectricPersistenceConfig
+    setStreamControls: (
+      pause: () => void,
+      resume: () => void,
+      isPaused: () => boolean
+    ) => void
   }
 ): SyncConfig<T> {
-  const { seenTxids, persistence: persistenceConfig } = options
+  const {
+    seenTxids,
+    persistence: persistenceConfig,
+    setStreamControls,
+  } = options
   const persistence =
     persistenceConfig && createPersistence<T>(persistenceConfig)
 
@@ -563,7 +646,11 @@ function createElectricSync<T extends Row<unknown>>(
       let transactionStarted = false
       const newTxids = new Set<Txid>()
 
-      unsubscribeStream = stream.subscribe((messages: Array<Message<T>>) => {
+      // Stream pause/resume state
+      let isPaused = false
+
+      // Message handler function - extracted so we can resubscribe
+      const handleMessages = (messages: Array<Message<T>>) => {
         let hasUpToDate = false
         let hasSyncedChanges = false
         for (const message of messages) {
@@ -650,12 +737,37 @@ function createElectricSync<T extends Row<unknown>>(
             return clonedSeen
           })
         }
-      })
+      }
+
+      // Subscribe to the stream with our message handler
+      unsubscribeStream = stream.subscribe(handleMessages)
+
+      // Stream control functions
+      const pauseStreamFn = () => {
+        if (isPaused) return
+        isPaused = true
+        unsubscribeStream()
+        debug(`Stream paused`)
+      }
+
+      const resumeStreamFn = () => {
+        if (!isPaused) return
+        isPaused = false
+        unsubscribeStream = stream.subscribe(handleMessages)
+        debug(`Stream resumed`)
+      }
+
+      const isStreamPausedFn = () => isPaused
+
+      // Expose stream controls to the collection
+      setStreamControls(pauseStreamFn, resumeStreamFn, isStreamPausedFn)
 
       // Return the unsubscribe function
       return () => {
         // Unsubscribe from the stream
-        unsubscribeStream()
+        if (!isPaused) {
+          unsubscribeStream()
+        }
         // Abort the abort controller to stop the stream
         abortController.abort()
       }
