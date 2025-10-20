@@ -591,24 +591,6 @@ function createElectricSync<T extends Row<unknown>>(
         }
       }
 
-      // Abort controller for the stream - wraps the signal if provided
-      const abortController = new AbortController()
-
-      if (shapeOptions.signal) {
-        shapeOptions.signal.addEventListener(
-          `abort`,
-          () => {
-            abortController.abort()
-          },
-          {
-            once: true,
-          }
-        )
-        if (shapeOptions.signal.aborted) {
-          abortController.abort()
-        }
-      }
-
       const prev = persistence?.read()
       const computedOffset: Offset | undefined =
         (shapeOptions as any).offset ?? prev?.lastOffset
@@ -616,38 +598,67 @@ function createElectricSync<T extends Row<unknown>>(
       const computedHandle: string =
         (shapeOptions as any).shapeHandle ?? prev?.shapeHandle
 
-      const stream = new ShapeStream({
-        ...shapeOptions,
-        offset: computedOffset,
-        handle: computedHandle,
-        signal: abortController.signal,
-        onError: (errorParams) => {
-          // Just immediately mark ready if there's an error to avoid blocking
-          // apps waiting for `.preload()` to finish.
-          // Note that Electric sends a 409 error on a `must-refetch` message, but the
-          // ShapeStream handled this and it will not reach this handler, therefor
-          // this markReady will not be triggers by a `must-refetch`.
-          markReady()
+      // Stream pause/resume state
+      let isPaused = false
+      let currentStream: any // ShapeStream instance - TypeScript struggles with the generic type here
+      let currentStreamAbortController: AbortController
+      let currentStreamOffset: Offset | undefined = computedOffset
+      let currentStreamHandle: string | undefined = computedHandle
 
-          if (shapeOptions.onError) {
-            return shapeOptions.onError(errorParams)
-          } else {
-            console.error(
-              `An error occurred while syncing collection: ${collection.id}, \n` +
-                `it has been marked as ready to avoid blocking apps waiting for '.preload()' to finish. \n` +
-                `You can provide an 'onError' handler on the shapeOptions to handle this error, and this message will not be logged.`,
-              errorParams
-            )
-          }
-
-          return
-        },
-      })
       let transactionStarted = false
       const newTxids = new Set<Txid>()
 
-      // Stream pause/resume state
-      let isPaused = false
+      // Function to create a stream with current offset/handle
+      const createStream = () => {
+        // Create a new abort controller for this stream instance
+        currentStreamAbortController = new AbortController()
+
+        // Chain the original abort signal if present
+        if (shapeOptions.signal) {
+          shapeOptions.signal.addEventListener(
+            `abort`,
+            () => {
+              currentStreamAbortController.abort()
+            },
+            {
+              once: true,
+            }
+          )
+          if (shapeOptions.signal.aborted) {
+            currentStreamAbortController.abort()
+          }
+        }
+
+        return new ShapeStream({
+          ...shapeOptions,
+          offset: currentStreamOffset,
+          handle: currentStreamHandle,
+          signal: currentStreamAbortController.signal,
+          onError: (errorParams) => {
+            // Just immediately mark ready if there's an error to avoid blocking
+            // apps waiting for `.preload()` to finish.
+            // Note that Electric sends a 409 error on a `must-refetch` message, but the
+            // ShapeStream handled this and it will not reach this handler, therefor
+            // this markReady will not be triggers by a `must-refetch`.
+            markReady()
+
+            if (shapeOptions.onError) {
+              return shapeOptions.onError(errorParams)
+            } else {
+              console.error(
+                `An error occurred while syncing collection: ${collection.id}, \n` +
+                  `it has been marked as ready to avoid blocking apps waiting for '.preload()' to finish. \n` +
+                  `You can provide an 'onError' handler on the shapeOptions to handle this error, and this message will not be logged.`,
+                errorParams
+              )
+            }
+
+            return
+          },
+        })
+      }
+
+      currentStream = createStream()
 
       // Message handler function - extracted so we can resubscribe
       const handleMessages = (messages: Array<Message<T>>) => {
@@ -718,9 +729,13 @@ function createElectricSync<T extends Row<unknown>>(
             transactionStarted = false
           }
 
+          // Always update our tracked offset/handle for pause/resume
+          currentStreamOffset = currentStream.lastOffset
+          currentStreamHandle = currentStream.shapeHandle
+
           // Persist synced changes to storage
           if (persistence && hasSyncedChanges) {
-            persistence.saveCollectionSnapshot(collection, stream)
+            persistence.saveCollectionSnapshot(collection, currentStream)
           }
 
           // Mark the collection as ready now that sync is up to date
@@ -740,21 +755,41 @@ function createElectricSync<T extends Row<unknown>>(
       }
 
       // Subscribe to the stream with our message handler
-      unsubscribeStream = stream.subscribe(handleMessages)
+      unsubscribeStream = currentStream.subscribe(handleMessages)
 
       // Stream control functions
       const pauseStreamFn = () => {
         if (isPaused) return
         isPaused = true
+
+        // Save current offset/handle before stopping the stream
+        currentStreamOffset = currentStream.lastOffset
+        currentStreamHandle = currentStream.shapeHandle
+
+        // Unsubscribe and abort the stream to stop fetching
         unsubscribeStream()
-        debug(`Stream paused`)
+        currentStreamAbortController.abort()
+
+        debug(
+          `Stream paused at offset: %o, handle: %o`,
+          currentStreamOffset,
+          currentStreamHandle
+        )
       }
 
       const resumeStreamFn = () => {
         if (!isPaused) return
         isPaused = false
-        unsubscribeStream = stream.subscribe(handleMessages)
-        debug(`Stream resumed`)
+
+        // Create a new stream starting from the saved offset/handle
+        currentStream = createStream()
+        unsubscribeStream = currentStream.subscribe(handleMessages)
+
+        debug(
+          `Stream resumed from offset: %o, handle: %o`,
+          currentStreamOffset,
+          currentStreamHandle
+        )
       }
 
       const isStreamPausedFn = () => isPaused
@@ -768,8 +803,8 @@ function createElectricSync<T extends Row<unknown>>(
         if (!isPaused) {
           unsubscribeStream()
         }
-        // Abort the abort controller to stop the stream
-        abortController.abort()
+        // Abort the stream to stop it
+        currentStreamAbortController.abort()
       }
     },
     // Expose the getSyncMetadata function
