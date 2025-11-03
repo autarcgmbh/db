@@ -600,7 +600,7 @@ function createElectricSync<T extends Row<unknown>>(
 
       // Stream pause/resume state
       let isPaused = false
-      let currentStream: any
+      let currentStream: any // ShapeStream instance - TypeScript struggles with the generic type here
       let currentStreamAbortController: AbortController
       let currentStreamOffset: Offset | undefined = computedOffset
       let currentStreamHandle: string | undefined = computedHandle
@@ -608,6 +608,7 @@ function createElectricSync<T extends Row<unknown>>(
       let transactionStarted = false
       const newTxids = new Set<Txid>()
 
+      // Function to create a stream with current offset/handle
       const createStream = () => {
         // Create a new abort controller for this stream instance
         currentStreamAbortController = new AbortController()
