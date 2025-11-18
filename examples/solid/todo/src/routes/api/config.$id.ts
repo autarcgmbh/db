@@ -2,7 +2,7 @@ import { createServerFileRoute } from "@tanstack/solid-start/server"
 import { json } from "@tanstack/solid-start"
 import { sql } from "../../db/postgres"
 import { validateUpdateConfig } from "../../db/validation"
-import type { Txid } from "@tanstack/electric-db-collection"
+import type { Txid } from "@autarcgmbh/electric-db-collection"
 
 // Generate a transaction ID
 async function generateTxId(tx: any): Promise<Txid> {

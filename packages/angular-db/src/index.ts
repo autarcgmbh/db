@@ -162,11 +162,12 @@ export function injectLiveQuery(opts: any) {
     }
 
     // Subscribe to changes
-    unsub = currentCollection.subscribeChanges(
+    const subscription = currentCollection.subscribeChanges(
       (_: Array<ChangeMessage<any>>) => {
         syncDataFromCollection(currentCollection)
       }
     )
+    unsub = subscription.unsubscribe.bind(subscription)
 
     // Handle ready state
     currentCollection.onFirstReady(() => {
@@ -183,9 +184,7 @@ export function injectLiveQuery(opts: any) {
     data,
     collection,
     status,
-    isLoading: computed(
-      () => status() === `loading` || status() === `initialCommit`
-    ),
+    isLoading: computed(() => status() === `loading`),
     isReady: computed(() => status() === `ready`),
     isIdle: computed(() => status() === `idle`),
     isError: computed(() => status() === `error`),

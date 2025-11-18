@@ -79,7 +79,7 @@ Both use `localStorageCollectionOptions` and `localOnlyCollectionOptions` respec
 For real-time sync with [ElectricSQL](https://electric-sql.com):
 
 ```sh
-npm install @tanstack/electric-db-collection
+npm install @autarcgmbh/electric-db-collection
 ```
 
 Use `electricCollectionOptions` to sync data from Postgres databases through ElectricSQL shapes. Ideal for real-time, local-first applications.

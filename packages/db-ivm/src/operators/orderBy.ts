@@ -3,8 +3,7 @@ import { topKWithFractionalIndex } from "./topKWithFractionalIndex.js"
 import { map } from "./map.js"
 import { innerJoin } from "./join.js"
 import { consolidate } from "./consolidate.js"
-import type { KeyValue } from "../types.js"
-import type { IStreamBuilder } from "../types"
+import type { IStreamBuilder, KeyValue } from "../types.js"
 
 export interface OrderByOptions<Ve> {
   comparator?: (a: Ve, b: Ve) => number
@@ -14,6 +13,9 @@ export interface OrderByOptions<Ve> {
 
 type OrderByWithFractionalIndexOptions<Ve> = OrderByOptions<Ve> & {
   setSizeCallback?: (getSize: () => number) => void
+  setWindowFn?: (
+    windowFn: (options: { offset?: number; limit?: number }) => void
+  ) => void
 }
 
 /**
@@ -148,6 +150,7 @@ export function orderByWithFractionalIndexBase<
   const limit = options?.limit ?? Infinity
   const offset = options?.offset ?? 0
   const setSizeCallback = options?.setSizeCallback
+  const setWindowFn = options?.setWindowFn
   const comparator =
     options?.comparator ??
     ((a, b) => {
@@ -168,6 +171,7 @@ export function orderByWithFractionalIndexBase<
           limit,
           offset,
           setSizeCallback,
+          setWindowFn,
         }
       ),
       consolidate()

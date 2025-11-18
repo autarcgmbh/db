@@ -1,10 +1,40 @@
 import type { IStreamBuilder } from "@tanstack/db-ivm"
-import type { Collection } from "./collection"
+import type { Collection } from "./collection/index.js"
 import type { StandardSchemaV1 } from "@standard-schema/spec"
 import type { Transaction } from "./transactions"
+import type { BasicExpression, OrderBy } from "./query/ir.js"
+import type { EventEmitter } from "./event-emitter.js"
 
-import type { SingleRowRefProxy } from "./query/builder/ref-proxy"
-import type { BasicExpression } from "./query/ir.js"
+/**
+ * Interface for a collection-like object that provides the necessary methods
+ * for the change events system to work
+ */
+export interface CollectionLike<
+  T extends object = Record<string, unknown>,
+  TKey extends string | number = string | number,
+> extends Pick<
+    Collection<T, TKey>,
+    `get` | `has` | `entries` | `indexes` | `id` | `compareOptions`
+  > {}
+
+/**
+ * StringSortOpts - Options for string sorting behavior
+ *
+ * This discriminated union allows for two types of string sorting:
+ * - **Lexical**: Simple character-by-character comparison (default)
+ * - **Locale**: Locale-aware sorting with optional customization
+ *
+ * The union ensures that locale options are only available when locale sorting is selected.
+ */
+export type StringCollationConfig =
+  | {
+      stringSort?: `lexical`
+    }
+  | {
+      stringSort?: `locale`
+      locale?: string
+      localeOptions?: object
+    }
 
 /**
  * Helper type to extract the output type from a standard schema
@@ -36,9 +66,9 @@ export type TransactionState = `pending` | `persisting` | `completed` | `failed`
 export type Fn = (...args: Array<any>) => any
 
 /**
- * A record of utility functions that can be attached to a collection
+ * A record of utilities (functions or getters) that can be attached to a collection
  */
-export type UtilsRecord = Record<string, Fn>
+export type UtilsRecord = Record<string, any>
 
 /**
  *
@@ -152,6 +182,84 @@ export type Row<TExtensions = never> = Record<string, Value<TExtensions>>
 
 export type OperationType = `insert` | `update` | `delete`
 
+/**
+ * Subscription status values
+ */
+export type SubscriptionStatus = `ready` | `loadingSubset`
+
+/**
+ * Event emitted when subscription status changes
+ */
+export interface SubscriptionStatusChangeEvent {
+  type: `status:change`
+  subscription: Subscription
+  previousStatus: SubscriptionStatus
+  status: SubscriptionStatus
+}
+
+/**
+ * Event emitted when subscription status changes to a specific status
+ */
+export interface SubscriptionStatusEvent<T extends SubscriptionStatus> {
+  type: `status:${T}`
+  subscription: Subscription
+  previousStatus: SubscriptionStatus
+  status: T
+}
+
+/**
+ * Event emitted when subscription is unsubscribed
+ */
+export interface SubscriptionUnsubscribedEvent {
+  type: `unsubscribed`
+  subscription: Subscription
+}
+
+/**
+ * All subscription events
+ */
+export type SubscriptionEvents = {
+  "status:change": SubscriptionStatusChangeEvent
+  "status:ready": SubscriptionStatusEvent<`ready`>
+  "status:loadingSubset": SubscriptionStatusEvent<`loadingSubset`>
+  unsubscribed: SubscriptionUnsubscribedEvent
+}
+
+/**
+ * Public interface for a collection subscription
+ * Used by sync implementations to track subscription lifecycle
+ */
+export interface Subscription extends EventEmitter<SubscriptionEvents> {
+  /** Current status of the subscription */
+  readonly status: SubscriptionStatus
+}
+
+export type LoadSubsetOptions = {
+  /** The where expression to filter the data */
+  where?: BasicExpression<boolean>
+  /** The order by clause to sort the data */
+  orderBy?: OrderBy
+  /** The limit of the data to load */
+  limit?: number
+  /**
+   * The subscription that triggered the load.
+   * Advanced sync implementations can use this for:
+   * - LRU caching keyed by subscription
+   * - Reference counting to track active subscriptions
+   * - Subscribing to subscription events (e.g., finalization/unsubscribe)
+   * @optional Available when called from CollectionSubscription, may be undefined for direct calls
+   */
+  subscription?: Subscription
+}
+
+export type LoadSubsetFn = (options: LoadSubsetOptions) => true | Promise<void>
+
+export type CleanupFn = () => void
+
+export type SyncConfigRes = {
+  cleanup?: CleanupFn
+  loadSubset?: LoadSubsetFn
+}
 export interface SyncConfig<
   T extends object = Record<string, unknown>,
   TKey extends string | number = string | number,
@@ -163,7 +271,7 @@ export interface SyncConfig<
     commit: () => void
     markReady: () => void
     truncate: () => void
-  }) => void
+  }) => void | CleanupFn | SyncConfigRes
 
   /**
    * Get the sync metadata for insert operations
@@ -232,7 +340,7 @@ export interface InsertConfig {
 export type UpdateMutationFnParams<
   T extends object = Record<string, unknown>,
   TKey extends string | number = string | number,
-  TUtils extends UtilsRecord = Record<string, Fn>,
+  TUtils extends UtilsRecord = UtilsRecord,
 > = {
   transaction: TransactionWithMutations<T, `update`>
   collection: Collection<T, TKey, TUtils>
@@ -241,7 +349,7 @@ export type UpdateMutationFnParams<
 export type InsertMutationFnParams<
   T extends object = Record<string, unknown>,
   TKey extends string | number = string | number,
-  TUtils extends UtilsRecord = Record<string, Fn>,
+  TUtils extends UtilsRecord = UtilsRecord,
 > = {
   transaction: TransactionWithMutations<T, `insert`>
   collection: Collection<T, TKey, TUtils>
@@ -249,7 +357,7 @@ export type InsertMutationFnParams<
 export type DeleteMutationFnParams<
   T extends object = Record<string, unknown>,
   TKey extends string | number = string | number,
-  TUtils extends UtilsRecord = Record<string, Fn>,
+  TUtils extends UtilsRecord = UtilsRecord,
 > = {
   transaction: TransactionWithMutations<T, `delete`>
   collection: Collection<T, TKey, TUtils>
@@ -258,21 +366,21 @@ export type DeleteMutationFnParams<
 export type InsertMutationFn<
   T extends object = Record<string, unknown>,
   TKey extends string | number = string | number,
-  TUtils extends UtilsRecord = Record<string, Fn>,
+  TUtils extends UtilsRecord = UtilsRecord,
   TReturn = any,
 > = (params: InsertMutationFnParams<T, TKey, TUtils>) => Promise<TReturn>
 
 export type UpdateMutationFn<
   T extends object = Record<string, unknown>,
   TKey extends string | number = string | number,
-  TUtils extends UtilsRecord = Record<string, Fn>,
+  TUtils extends UtilsRecord = UtilsRecord,
   TReturn = any,
 > = (params: UpdateMutationFnParams<T, TKey, TUtils>) => Promise<TReturn>
 
 export type DeleteMutationFn<
   T extends object = Record<string, unknown>,
   TKey extends string | number = string | number,
-  TUtils extends UtilsRecord = Record<string, Fn>,
+  TUtils extends UtilsRecord = UtilsRecord,
   TReturn = any,
 > = (params: DeleteMutationFnParams<T, TKey, TUtils>) => Promise<TReturn>
 
@@ -288,22 +396,22 @@ export type DeleteMutationFn<
  *
  * @example
  * // Status transitions
- * // idle → loading → initialCommit → ready
+ * // idle → loading → ready (when markReady() is called)
  * // Any status can transition to → error or cleaned-up
  */
 export type CollectionStatus =
   /** Collection is created but sync hasn't started yet (when startSync config is false) */
   | `idle`
-  /** Sync has started but hasn't received the first commit yet */
+  /** Sync has started and is loading data */
   | `loading`
-  /** Collection is in the process of committing its first transaction */
-  | `initialCommit`
-  /** Collection has received at least one commit and is ready for use */
+  /** Collection has been explicitly marked ready via markReady() */
   | `ready`
   /** An error occurred during sync initialization */
   | `error`
   /** Collection has been cleaned up and resources freed */
   | `cleaned-up`
+
+export type SyncMode = `eager` | `on-demand`
 
 export interface BaseCollectionConfig<
   T extends object = Record<string, unknown>,
@@ -313,7 +421,7 @@ export interface BaseCollectionConfig<
   // then it would conflict with the overloads of createCollection which
   // requires either T to be provided or a schema to be provided but not both!
   TSchema extends StandardSchemaV1 = never,
-  TUtils extends UtilsRecord = Record<string, Fn>,
+  TUtils extends UtilsRecord = UtilsRecord,
   TReturn = any,
 > {
   // If an id isn't passed in, a UUID will be
@@ -336,8 +444,14 @@ export interface BaseCollectionConfig<
    */
   gcTime?: number
   /**
-   * Whether to start syncing immediately when the collection is created.
-   * Defaults to false for lazy loading. Set to true to immediately sync.
+   * Whether to eagerly start syncing on collection creation.
+   * When true, syncing begins immediately. When false, syncing starts when the first subscriber attaches.
+   *
+   * Note: Even with startSync=true, collections will pause syncing when there are no active
+   * subscribers (typically when components querying the collection unmount), resuming when new
+   * subscribers attach. This preserves normal staleTime/gcTime behavior.
+   *
+   * @default false
    */
   startSync?: boolean
   /**
@@ -360,6 +474,15 @@ export interface BaseCollectionConfig<
    * compare: (x, y) => x.createdAt.getTime() - y.createdAt.getTime()
    */
   compare?: (x: T, y: T) => number
+  /**
+   * The mode of sync to use for the collection.
+   * @default `eager`
+   * @description
+   * - `eager`: syncs all data immediately on preload
+   * - `on-demand`: syncs data in incremental snapshots when the collection is queried
+   * The exact implementation of the sync mode is up to the sync implementation.
+   */
+  syncMode?: SyncMode
   /**
    * Optional asynchronous handler function called before an insert operation
    * @param params Object containing transaction and collection information
@@ -489,15 +612,49 @@ export interface BaseCollectionConfig<
    * }
    */
   onDelete?: DeleteMutationFn<T, TKey, TUtils, TReturn>
+
+  /**
+   * Specifies how to compare data in the collection.
+   * This should be configured to match data ordering on the backend.
+   * E.g., when using the Electric DB collection these options
+   *       should match the database's collation settings.
+   */
+  defaultStringCollation?: StringCollationConfig
+
+  utils?: TUtils
 }
 
 export interface CollectionConfig<
   T extends object = Record<string, unknown>,
   TKey extends string | number = string | number,
   TSchema extends StandardSchemaV1 = never,
-> extends BaseCollectionConfig<T, TKey, TSchema> {
+  TUtils extends UtilsRecord = UtilsRecord,
+> extends BaseCollectionConfig<T, TKey, TSchema, TUtils> {
   sync: SyncConfig<T, TKey>
 }
+
+export type SingleResult = {
+  singleResult: true
+}
+
+export type NonSingleResult = {
+  singleResult?: never
+}
+
+export type MaybeSingleResult = {
+  /**
+   * If enabled the collection will return a single object instead of an array
+   */
+  singleResult?: true
+}
+
+// Only used for live query collections
+export type CollectionConfigSingleRowOption<
+  T extends object = Record<string, unknown>,
+  TKey extends string | number = string | number,
+  TSchema extends StandardSchemaV1 = never,
+  TUtils extends UtilsRecord = {},
+> = CollectionConfig<T, TKey, TSchema, TUtils> & MaybeSingleResult
 
 export type ChangesPayload<T extends object = Record<string, unknown>> = Array<
   ChangeMessage<T>
@@ -541,27 +698,28 @@ export type NamespacedAndKeyedStream = IStreamBuilder<KeyedNamespacedRow>
 /**
  * Options for subscribing to collection changes
  */
-export interface SubscribeChangesOptions<
-  T extends object = Record<string, unknown>,
-> {
+export interface SubscribeChangesOptions {
   /** Whether to include the current state as initial changes */
   includeInitialState?: boolean
-  /** Filter changes using a where expression */
-  where?: (row: SingleRowRefProxy<T>) => any
   /** Pre-compiled expression for filtering changes */
   whereExpression?: BasicExpression<boolean>
+}
+
+export interface SubscribeChangesSnapshotOptions
+  extends Omit<SubscribeChangesOptions, `includeInitialState`> {
+  orderBy?: OrderBy
+  limit?: number
 }
 
 /**
  * Options for getting current state as changes
  */
-export interface CurrentStateAsChangesOptions<
-  T extends object = Record<string, unknown>,
-> {
-  /** Filter the current state using a where expression */
-  where?: (row: SingleRowRefProxy<T>) => any
+export interface CurrentStateAsChangesOptions {
   /** Pre-compiled expression for filtering the current state */
-  whereExpression?: BasicExpression<boolean>
+  where?: BasicExpression<boolean>
+  orderBy?: OrderBy
+  limit?: number
+  optimizedOnly?: boolean
 }
 
 /**

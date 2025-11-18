@@ -3,15 +3,17 @@
   "description": "ElectricSQL collection for TanStack DB",
   "version": "0.9.0",
   "dependencies": {
-    "@electric-sql/client": "1.0.9",
+    "@electric-sql/client": "^1.1.4",
     "@standard-schema/spec": "^1.0.0",
-    "@tanstack/db": "0.3.0",
+    "@tanstack/db": "0.5.0",
     "@tanstack/store": "^0.7.5",
     "debug": "^4.4.1"
   },
   "devDependencies": {
     "@types/debug": "^4.1.12",
-    "@vitest/coverage-istanbul": "^3.2.4"
+    "@types/pg": "^8.15.6",
+    "@vitest/coverage-istanbul": "^3.2.4",
+    "pg": "^8.16.3"
   },
   "exports": {
     ".": {
@@ -34,8 +36,7 @@
   "module": "dist/esm/index.js",
   "packageManager": "pnpm@10.6.3",
   "peerDependencies": {
-    "@electric-sql/client": ">=1.0.0",
-    "typescript": ">=4.7"
+    "@electric-sql/client": ">=1.0.0"
   },
   "author": "Autarc GmbH",
   "license": "MIT",
@@ -58,7 +59,8 @@
     "build": "vite build",
     "dev": "vite build --watch",
     "lint": "eslint . --fix",
-    "test": "npx vitest --run"
+    "test": "npx vitest run",
+    "test:e2e": "npx vitest run --config vitest.e2e.config.ts"
   },
   "sideEffects": false,
   "type": "module",

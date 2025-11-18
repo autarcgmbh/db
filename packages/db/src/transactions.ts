@@ -1,10 +1,12 @@
 import { createDeferred } from "./deferred"
+import "./duplicate-instance-check"
 import {
   MissingMutationFunctionError,
   TransactionAlreadyCompletedRollbackError,
   TransactionNotPendingCommitError,
   TransactionNotPendingMutateError,
 } from "./errors"
+import { transactionScopedScheduler } from "./scheduler.js"
 import type { Deferred } from "./deferred"
 import type {
   MutationFn,
@@ -179,11 +181,21 @@ export function getActiveTransaction(): Transaction | undefined {
 }
 
 function registerTransaction(tx: Transaction<any>) {
+  // Clear any stale work that may have been left behind if a previous mutate
+  // scope aborted before we could flush.
+  transactionScopedScheduler.clear(tx.id)
   transactionStack.push(tx)
 }
 
 function unregisterTransaction(tx: Transaction<any>) {
-  transactionStack = transactionStack.filter((t) => t.id !== tx.id)
+  // Always flush pending work for this transaction before removing it from
+  // the ambient stack – this runs even if the mutate callback throws.
+  // If flush throws (e.g., due to a job error), we still clean up the stack.
+  try {
+    transactionScopedScheduler.flush(tx.id)
+  } finally {
+    transactionStack = transactionStack.filter((t) => t.id !== tx.id)
+  }
 }
 
 function removeFromPendingList(tx: Transaction<any>) {
@@ -233,7 +245,9 @@ class Transaction<T extends object = Record<string, unknown>> {
 
   /**
    * Execute collection operations within this transaction
-   * @param callback - Function containing collection operations to group together
+   * @param callback - Function containing collection operations to group together. If the
+   * callback returns a Promise, the transaction context will remain active until the promise
+   * settles, allowing optimistic writes after `await` boundaries.
    * @returns This transaction for chaining
    * @example
    * // Group multiple operations
@@ -276,6 +290,7 @@ class Transaction<T extends object = Record<string, unknown>> {
     }
 
     registerTransaction(this)
+
     try {
       callback()
     } finally {
@@ -403,11 +418,11 @@ class Transaction<T extends object = Record<string, unknown>> {
     const hasCalled = new Set()
     for (const mutation of this.mutations) {
       if (!hasCalled.has(mutation.collection.id)) {
-        mutation.collection.onTransactionStateChange()
+        mutation.collection._state.onTransactionStateChange()
 
         // Only call commitPendingTransactions if there are pending sync transactions
-        if (mutation.collection.pendingSyncedTransactions.length > 0) {
-          mutation.collection.commitPendingTransactions()
+        if (mutation.collection._state.pendingSyncedTransactions.length > 0) {
+          mutation.collection._state.commitPendingTransactions()
         }
 
         hasCalled.add(mutation.collection.id)

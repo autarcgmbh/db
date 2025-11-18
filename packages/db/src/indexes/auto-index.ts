@@ -1,6 +1,8 @@
+import { DEFAULT_COMPARE_OPTIONS } from "../utils"
 import { BTreeIndex } from "./btree-index"
+import type { CompareOptions } from "../query/builder/types"
 import type { BasicExpression } from "../query/ir"
-import type { CollectionImpl } from "../collection"
+import type { CollectionImpl } from "../collection/index.js"
 
 export interface AutoIndexConfig {
   autoIndex?: `off` | `eager`
@@ -9,14 +11,6 @@ export interface AutoIndexConfig {
 function shouldAutoIndex(collection: CollectionImpl<any, any, any, any, any>) {
   // Only proceed if auto-indexing is enabled
   if (collection.config.autoIndex !== `eager`) {
-    return false
-  }
-
-  // Don't auto-index during sync operations
-  if (
-    collection.status === `loading` ||
-    collection.status === `initialCommit`
-  ) {
     return false
   }
 
@@ -30,15 +24,22 @@ export function ensureIndexForField<
   fieldName: string,
   fieldPath: Array<string>,
   collection: CollectionImpl<T, TKey, any, any, any>,
+  compareOptions?: CompareOptions,
   compareFn?: (a: any, b: any) => number
 ) {
   if (!shouldAutoIndex(collection)) {
     return
   }
 
+  const compareOpts = compareOptions ?? {
+    ...DEFAULT_COMPARE_OPTIONS,
+    ...collection.compareOptions,
+  }
+
   // Check if we already have an index for this field
-  const existingIndex = Array.from(collection.indexes.values()).find((index) =>
-    index.matchesField(fieldPath)
+  const existingIndex = Array.from(collection.indexes.values()).find(
+    (index) =>
+      index.matchesField(fieldPath) && index.matchesCompareOptions(compareOpts)
   )
 
   if (existingIndex) {
@@ -47,13 +48,27 @@ export function ensureIndexForField<
 
   // Create a new index for this field using the collection's createIndex method
   try {
-    collection.createIndex((row) => (row as any)[fieldName], {
-      name: `auto_${fieldName}`,
-      indexType: BTreeIndex,
-      options: compareFn ? { compareFn } : {},
-    })
+    // Use the proxy-based approach to create the proper accessor for nested paths
+    collection.createIndex(
+      (row) => {
+        // Navigate through the field path
+        let current: any = row
+        for (const part of fieldPath) {
+          current = current[part]
+        }
+        return current
+      },
+      {
+        name: `auto:${fieldPath.join(`.`)}`,
+        indexType: BTreeIndex,
+        options: compareFn ? { compareFn, compareOptions: compareOpts } : {},
+      }
+    )
   } catch (error) {
-    console.warn(`Failed to create auto-index for field "${fieldName}":`, error)
+    console.warn(
+      `${collection.id ? `[${collection.id}] ` : ``}Failed to create auto-index for field path "${fieldPath.join(`.`)}":`,
+      error
+    )
   }
 }
 
@@ -108,7 +123,7 @@ function extractIndexableExpressions(
       return
     }
 
-    // Check if the first argument is a property reference (single field)
+    // Check if the first argument is a property reference
     if (func.args.length < 1 || func.args[0].type !== `ref`) {
       return
     }
@@ -116,12 +131,14 @@ function extractIndexableExpressions(
     const fieldRef = func.args[0]
     const fieldPath = fieldRef.path
 
-    // Skip if it's not a simple field (e.g., nested properties or array access)
-    if (fieldPath.length !== 1) {
+    // Skip if the path is empty
+    if (fieldPath.length === 0) {
       return
     }
 
-    const fieldName = fieldPath[0]
+    // For nested paths, use the full path joined with underscores as the field name
+    // For simple paths, use the first (and only) element
+    const fieldName = fieldPath.join(`_`)
     results.push({ fieldName, fieldPath })
   }
 

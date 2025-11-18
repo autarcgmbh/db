@@ -38,6 +38,7 @@ The result types are automatically inferred from your query structure, providing
 - [Joins](#joins)
 - [Subqueries](#subqueries)
 - [groupBy and Aggregations](#groupby-and-aggregations)
+- [findOne](#findone)
 - [Distinct](#distinct)
 - [Order By, Limit, and Offset](#order-by-limit-and-offset)
 - [Composable Queries](#composable-queries)
@@ -160,7 +161,280 @@ export class UserListComponent {
 }
 ```
 
+> **Note:** React hooks (`useLiveQuery`, `useLiveInfiniteQuery`, `useLiveSuspenseQuery`) accept an optional dependency array parameter to re-execute queries when values change, similar to React's `useEffect`. See the [React Adapter documentation](../../framework/react/adapter#dependency-arrays) for details on when and how to use dependency arrays.
+
 For more details on framework integration, see the [React](../../framework/react/adapter), [Vue](../../framework/vue/adapter), and [Angular](../../framework/angular/adapter) adapter documentation.
+
+### Using with React Suspense
+
+For React applications, you can use the `useLiveSuspenseQuery` hook to integrate with React Suspense boundaries. This hook suspends rendering while data loads initially, then streams updates without re-suspending.
+
+```tsx
+import { useLiveSuspenseQuery } from '@tanstack/react-db'
+import { Suspense } from 'react'
+
+function UserList() {
+  // This will suspend until data is ready
+  const { data } = useLiveSuspenseQuery((q) =>
+    q
+      .from({ user: usersCollection })
+      .where(({ user }) => eq(user.active, true))
+  )
+
+  // data is always defined - no need for optional chaining
+  return (
+    <ul>
+      {data.map(user => (
+        <li key={user.id}>{user.name}</li>
+      ))}
+    </ul>
+  )
+}
+
+function App() {
+  return (
+    <Suspense fallback={<div>Loading users...</div>}>
+      <UserList />
+    </Suspense>
+  )
+}
+```
+
+#### Type Safety
+
+The key difference from `useLiveQuery` is that `data` is always defined (never `undefined`). The hook suspends during initial load, so by the time your component renders, data is guaranteed to be available:
+
+```tsx
+function UserStats() {
+  const { data } = useLiveSuspenseQuery((q) =>
+    q.from({ user: usersCollection })
+  )
+
+  // TypeScript knows data is Array<User>, not Array<User> | undefined
+  return <div>Total users: {data.length}</div>
+}
+```
+
+#### Error Handling
+
+Combine with Error Boundaries to handle loading errors:
+
+```tsx
+import { ErrorBoundary } from 'react-error-boundary'
+
+function App() {
+  return (
+    <ErrorBoundary fallback={<div>Failed to load users</div>}>
+      <Suspense fallback={<div>Loading users...</div>}>
+        <UserList />
+      </Suspense>
+    </ErrorBoundary>
+  )
+}
+```
+
+#### Reactive Updates
+
+After the initial load, data updates stream in without re-suspending:
+
+```tsx
+function UserList() {
+  const { data } = useLiveSuspenseQuery((q) =>
+    q.from({ user: usersCollection })
+  )
+
+  // Suspends once during initial load
+  // After that, data updates automatically when users change
+  // UI never re-suspends for live updates
+  return (
+    <ul>
+      {data.map(user => (
+        <li key={user.id}>{user.name}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+#### Re-suspending on Dependency Changes
+
+When dependencies change, the hook re-suspends to load new data:
+
+```tsx
+function FilteredUsers({ minAge }: { minAge: number }) {
+  const { data } = useLiveSuspenseQuery(
+    (q) =>
+      q
+        .from({ user: usersCollection })
+        .where(({ user }) => gt(user.age, minAge)),
+    [minAge] // Re-suspend when minAge changes
+  )
+
+  return (
+    <ul>
+      {data.map(user => (
+        <li key={user.id}>{user.name} - {user.age}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+#### When to Use Which Hook
+
+- **Use `useLiveSuspenseQuery`** when:
+  - You want to use React Suspense for loading states
+  - You prefer handling loading/error states with `<Suspense>` and `<ErrorBoundary>` components
+  - You want guaranteed non-undefined data types
+  - The query always needs to run (not conditional)
+
+- **Use `useLiveQuery`** when:
+  - You need conditional/disabled queries
+  - You prefer handling loading/error states within your component
+  - You want to show loading states inline without Suspense
+  - You need access to `status` and `isLoading` flags
+  - **You're using a router with loaders** (React Router, TanStack Router, etc.) - preload in the loader and use `useLiveQuery` in the component
+
+```tsx
+// useLiveQuery - handle states in component
+function UserList() {
+  const { data, status, isLoading } = useLiveQuery((q) =>
+    q.from({ user: usersCollection })
+  )
+
+  if (isLoading) return <div>Loading...</div>
+  if (status === 'error') return <div>Error loading users</div>
+
+  return <ul>{data?.map(user => <li key={user.id}>{user.name}</li>)}</ul>
+}
+
+// useLiveSuspenseQuery - handle states with Suspense/ErrorBoundary
+function UserList() {
+  const { data } = useLiveSuspenseQuery((q) =>
+    q.from({ user: usersCollection })
+  )
+
+  return <ul>{data.map(user => <li key={user.id}>{user.name}</li>)}</ul>
+}
+
+// useLiveQuery with router loader - recommended pattern
+// In your route configuration:
+const route = {
+  path: '/users',
+  loader: async () => {
+    // Preload the collection in the loader
+    await usersCollection.preload()
+    return null
+  },
+  component: UserList,
+}
+
+// In your component:
+function UserList() {
+  // Collection is already loaded, so data is immediately available
+  const { data } = useLiveQuery((q) =>
+    q.from({ user: usersCollection })
+  )
+
+  return <ul>{data?.map(user => <li key={user.id}>{user.name}</li>)}</ul>
+}
+```
+
+### Conditional Queries
+
+In React, you can conditionally disable a query by returning `undefined` or `null` from the `useLiveQuery` callback. When disabled, the hook returns a special state indicating the query is not active.
+
+```tsx
+import { useLiveQuery } from '@tanstack/react-db'
+
+function TodoList({ userId }: { userId?: string }) {
+  const { data, isEnabled, status } = useLiveQuery((q) => {
+    // Disable the query when userId is not available
+    if (!userId) return undefined
+
+    return q
+      .from({ todos: todosCollection })
+      .where(({ todos }) => eq(todos.userId, userId))
+  }, [userId])
+
+  if (!isEnabled) {
+    return <div>Please select a user</div>
+  }
+
+  return (
+    <ul>
+      {data?.map(todo => (
+        <li key={todo.id}>{todo.text}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+When the query is disabled (callback returns `undefined` or `null`):
+- `status` is `'disabled'`
+- `data`, `state`, and `collection` are `undefined`
+- `isEnabled` is `false`
+- `isLoading`, `isReady`, `isIdle`, and `isError` are all `false`
+
+This pattern is useful for "wait until inputs exist" flows without needing to conditionally render the hook itself or manage an external enabled flag.
+
+### Alternative Callback Return Types
+
+The `useLiveQuery` callback can return different types depending on your use case:
+
+#### Returning a Query Builder (Standard)
+
+The most common pattern is to return a query builder:
+
+```tsx
+const { data } = useLiveQuery((q) =>
+  q.from({ todos: todosCollection })
+   .where(({ todos }) => eq(todos.completed, false))
+)
+```
+
+#### Returning a Pre-created Collection
+
+You can return an existing collection directly:
+
+```tsx
+const activeUsersCollection = createLiveQueryCollection((q) =>
+  q.from({ users: usersCollection })
+   .where(({ users }) => eq(users.active, true))
+)
+
+function UserList({ usePrebuilt }: { usePrebuilt: boolean }) {
+  const { data } = useLiveQuery((q) => {
+    // Toggle between pre-created collection and ad-hoc query
+    if (usePrebuilt) return activeUsersCollection
+
+    return q.from({ users: usersCollection })
+  }, [usePrebuilt])
+
+  return <ul>{data?.map(user => <li key={user.id}>{user.name}</li>)}</ul>
+}
+```
+
+#### Returning a LiveQueryCollectionConfig
+
+You can return a configuration object to specify additional options like a custom ID:
+
+```tsx
+const { data } = useLiveQuery((q) => {
+  return {
+    query: q.from({ items: itemsCollection })
+             .select(({ items }) => ({ id: items.id })),
+    id: 'items-view', // Custom ID for debugging
+    gcTime: 10000 // Custom garbage collection time
+  }
+})
+```
+
+This is particularly useful when you need to:
+- Attach a stable ID for debugging or logging
+- Configure collection-specific options like `gcTime` or `getKey`
+- Conditionally switch between different collection configurations
 
 ## From Clause
 
@@ -892,6 +1166,106 @@ const engineeringStats = deptStats.get(1)
 > - **Single column grouping**: Keyed by the actual value (e.g., `deptStats.get(1)`)
 > - **Multiple column grouping**: Keyed by a JSON string of the grouped values (e.g., `userStats.get('[1,"admin"]')`)
 
+## findOne
+
+Use `findOne` to return a single result instead of an array. This is useful when you expect to find at most one matching record, such as when querying by a unique identifier.
+
+The `findOne` method changes the return type from an array to a single object or `undefined`. When no matching record is found, the result is `undefined`.
+
+### Method Signature
+
+```ts
+findOne(): Query
+```
+
+### Basic Usage
+
+Find a specific user by ID:
+
+```ts
+const user = createLiveQueryCollection((q) =>
+  q
+    .from({ users: usersCollection })
+    .where(({ users }) => eq(users.id, 1))
+    .findOne()
+)
+
+// Result type: User | undefined
+// If user with id=1 exists: { id: 1, name: 'John', ... }
+// If not found: undefined
+```
+
+### With React Hooks
+
+Use `findOne` with `useLiveQuery` to get a single record:
+
+```tsx
+import { useLiveQuery } from '@tanstack/react-db'
+import { eq } from '@tanstack/db'
+
+function UserProfile({ userId }: { userId: string }) {
+  const { data: user, isLoading } = useLiveQuery((q) =>
+    q
+      .from({ users: usersCollection })
+      .where(({ users }) => eq(users.id, userId))
+      .findOne()
+  , [userId])
+
+  if (isLoading) return <div>Loading...</div>
+  if (!user) return <div>User not found</div>
+
+  return <div>{user.name}</div>
+}
+```
+
+### With Select
+
+Combine `findOne` with `select` to project specific fields:
+
+```ts
+const userEmail = createLiveQueryCollection((q) =>
+  q
+    .from({ users: usersCollection })
+    .where(({ users }) => eq(users.id, 1))
+    .select(({ users }) => ({
+      id: users.id,
+      email: users.email,
+    }))
+    .findOne()
+)
+
+// Result type: { id: number, email: string } | undefined
+```
+
+### Return Type Behavior
+
+The return type changes based on whether `findOne` is used:
+
+```ts
+// Without findOne - returns array
+const users = createLiveQueryCollection((q) =>
+  q.from({ users: usersCollection })
+)
+// Type: Array<User>
+
+// With findOne - returns single object or undefined
+const user = createLiveQueryCollection((q) =>
+  q.from({ users: usersCollection }).findOne()
+)
+// Type: User | undefined
+```
+
+### Best Practices
+
+**Use when:**
+- Querying by unique identifiers (ID, email, etc.)
+- You expect at most one result
+- You want type-safe single-record access without array indexing
+
+**Avoid when:**
+- You might have multiple matching records (use regular queries instead)
+- You need to iterate over results
+
 ## Distinct
 
 Use `distinct` to remove duplicate rows from your query results based on the selected columns. The `distinct` operator ensures that each unique combination of selected values appears only once in the result set.
@@ -1220,6 +1594,41 @@ String pattern matching:
 ```ts
 like(user.name, 'John%')    // Case-sensitive
 ilike(user.email, '%@gmail.com')  // Case-insensitive
+```
+
+#### `isUndefined(value)`, `isNull(value)`
+Check for missing vs null values:
+```ts
+// Check if a property is missing/undefined
+isUndefined(user.profile)
+
+// Check if a value is explicitly null
+isNull(user.profile)
+```
+
+These functions are particularly important when working with joins and optional properties, as they distinguish between:
+- `undefined`: The property is absent or not present
+- `null`: The property exists but is explicitly set to null
+
+**Example with joins:**
+```ts
+// Find users without a matching profile (left join resulted in undefined)
+const usersWithoutProfiles = createLiveQueryCollection((q) =>
+  q
+    .from({ user: usersCollection })
+    .leftJoin(
+      { profile: profilesCollection },
+      ({ user, profile }) => eq(user.id, profile.userId)
+    )
+    .where(({ profile }) => isUndefined(profile))
+)
+
+// Find users with explicitly null bio field
+const usersWithNullBio = createLiveQueryCollection((q) =>
+  q
+    .from({ user: usersCollection })
+    .where(({ user }) => isNull(user.bio))
+)
 ```
 
 ### Logical Operators

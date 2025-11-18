@@ -3,7 +3,7 @@ import { D2, MultiSet, output } from "@tanstack/db-ivm"
 import { compileQuery } from "../../../src/query/compiler/index.js"
 import { CollectionRef, Func, PropRef, Value } from "../../../src/query/ir.js"
 import type { QueryIR } from "../../../src/query/ir.js"
-import type { CollectionImpl } from "../../../src/collection.js"
+import type { CollectionImpl } from "../../../src/collection/index.js"
 
 // Sample user type for tests
 type User = {
@@ -48,8 +48,10 @@ describe(`Query2 Compiler`, () => {
         { users: input },
         { users: usersCollection },
         {},
+        {},
         new Set(),
-        {}
+        {},
+        () => {}
       )
 
       const messages: Array<MultiSet<any>> = []
@@ -102,8 +104,10 @@ describe(`Query2 Compiler`, () => {
         { users: input },
         { users: usersCollection },
         {},
+        {},
         new Set(),
-        {}
+        {},
+        () => {}
       )
 
       const messages: Array<MultiSet<any>> = []
@@ -178,8 +182,10 @@ describe(`Query2 Compiler`, () => {
         { users: input },
         { users: usersCollection },
         {},
+        {},
         new Set(),
-        {}
+        {},
+        () => {}
       )
 
       const messages: Array<MultiSet<any>> = []
@@ -242,8 +248,10 @@ describe(`Query2 Compiler`, () => {
         { users: input },
         { users: usersCollection },
         {},
+        {},
         new Set(),
-        {}
+        {},
+        () => {}
       )
 
       const messages: Array<MultiSet<any>> = []

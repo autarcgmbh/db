@@ -1,4 +1,5 @@
-import type { CollectionImpl } from "../../collection.js"
+import type { CollectionImpl } from "../../collection/index.js"
+import type { SingleResult, StringCollationConfig } from "../../types.js"
 import type {
   Aggregate,
   BasicExpression,
@@ -47,6 +48,8 @@ export interface Context {
   >
   // The result type after select (if select has been called)
   result?: any
+  // Single result only (if findOne has been called)
+  singleResult?: boolean
 }
 
 /**
@@ -104,7 +107,7 @@ export type SchemaFromSource<T extends Source> = Prettify<{
  * GetAliases - Extracts all table aliases available in a query context
  *
  * Simple utility type that returns the keys of the schema, representing
- * all table/collection aliases that can be referenced in the current query.
+ * all table/source aliases that can be referenced in the current query.
  */
 export type GetAliases<TContext extends Context> = keyof TContext[`schema`]
 
@@ -300,26 +303,7 @@ export type OrderByCallback<TContext extends Context> = (
 export type OrderByOptions = {
   direction?: OrderByDirection
   nulls?: `first` | `last`
-} & StringSortOpts
-
-/**
- * StringSortOpts - Options for string sorting behavior
- *
- * This discriminated union allows for two types of string sorting:
- * - **Lexical**: Simple character-by-character comparison (default)
- * - **Locale**: Locale-aware sorting with optional customization
- *
- * The union ensures that locale options are only available when locale sorting is selected.
- */
-export type StringSortOpts =
-  | {
-      stringSort?: `lexical`
-    }
-  | {
-      stringSort?: `locale`
-      locale?: string
-      localeOptions?: object
-    }
+} & StringCollationConfig
 
 /**
  * CompareOptions - Final resolved options for comparison operations
@@ -328,12 +312,9 @@ export type StringSortOpts =
  * to their concrete values. Unlike OrderByOptions, all fields are required
  * since defaults have been applied.
  */
-export type CompareOptions = {
+export type CompareOptions = StringCollationConfig & {
   direction: OrderByDirection
   nulls: `first` | `last`
-  stringSort: `lexical` | `locale`
-  locale?: string
-  localeOptions?: object
 }
 
 /**
@@ -528,6 +509,20 @@ type WithoutRefBrand<T> =
   T extends Record<string, any> ? Omit<T, typeof RefBrand> : T
 
 /**
+ * PreserveSingleResultFlag - Conditionally includes the singleResult flag
+ *
+ * This helper type ensures the singleResult flag is only added to the context when it's
+ * explicitly true. It uses a non-distributive conditional (tuple wrapper) to prevent
+ * unexpected behavior when TFlag is a union type.
+ *
+ * @template TFlag - The singleResult flag value to check
+ * @returns { singleResult: true } if TFlag is true, otherwise {}
+ */
+type PreserveSingleResultFlag<TFlag> = [TFlag] extends [true]
+  ? { singleResult: true }
+  : {}
+
+/**
  * MergeContextWithJoinType - Creates a new context after a join operation
  *
  * This is the core type that handles the complex logic of merging schemas
@@ -548,6 +543,7 @@ type WithoutRefBrand<T> =
  * - `hasJoins`: Set to true
  * - `joinTypes`: Updated to track this join type
  * - `result`: Preserved from previous operations
+ * - `singleResult`: Preserved only if already true (via PreserveSingleResultFlag)
  */
 export type MergeContextWithJoinType<
   TContext extends Context,
@@ -571,7 +567,7 @@ export type MergeContextWithJoinType<
     [K in keyof TNewSchema & string]: TJoinType
   }
   result: TContext[`result`]
-}
+} & PreserveSingleResultFlag<TContext[`singleResult`]>
 
 /**
  * ApplyJoinOptionalityToMergedSchema - Applies optionality rules when merging schemas
@@ -620,6 +616,14 @@ export type ApplyJoinOptionalityToMergedSchema<
     : // New table is required for inner and right joins
       TNewSchema[K]
 }
+
+/**
+ * Utility type to infer the query result size (single row or an array)
+ */
+export type InferResultType<TContext extends Context> =
+  TContext extends SingleResult
+    ? GetResult<TContext> | undefined
+    : Array<GetResult<TContext>>
 
 /**
  * GetResult - Determines the final result type of a query
