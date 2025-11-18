@@ -2,13 +2,30 @@ import DebugModule from "debug"
 import { Store } from "@tanstack/store"
 import { DeduplicatedLoadSubset } from "@tanstack/db"
 import {
+  ShapeStream,
+  isChangeMessage,
+  isControlMessage,
+  isVisibleInSnapshot,
+} from "@electric-sql/client"
+import {
   ExpectedNumberInAwaitTxIdError,
   StreamAbortedError,
   TimeoutWaitingForMatchError,
   TimeoutWaitingForTxIdError,
 } from "./errors"
 import { compileSQL } from "./sql-compiler"
-import { validateJsonSerializable, type StorageApi } from "./persistanceAdapter"
+import { validateJsonSerializable } from "./persistanceAdapter"
+import type {
+  ControlMessage,
+  GetExtensions,
+  Message,
+  Offset,
+  PostgresSnapshot,
+  Row,
+  ShapeStreamOptions,
+} from "@electric-sql/client"
+import type { StorageApi } from "./persistanceAdapter"
+
 import type {
   BaseCollectionConfig,
   CollectionConfig,
@@ -22,19 +39,6 @@ import type {
   UtilsRecord,
 } from "@tanstack/db"
 import type { StandardSchemaV1 } from "@standard-schema/spec"
-import {
-  ShapeStream,
-  isChangeMessage,
-  isControlMessage,
-  isVisibleInSnapshot,
-  type ControlMessage,
-  type GetExtensions,
-  type Message,
-  type Offset,
-  type PostgresSnapshot,
-  type Row,
-  type ShapeStreamOptions,
-} from "@electric-sql/client"
 
 // Re-export for user convenience in custom match functions
 export { isChangeMessage, isControlMessage } from "@electric-sql/client"
@@ -971,14 +975,16 @@ function createElectricSync<T extends Row<unknown>>(
         for (const message of messages) {
           // Add message to current batch buffer (for race condition handling)
           if (isChangeMessage(message)) {
-            currentBatchMessages.setState((currentBuffer: Array<Message<T>>) => {
-              const newBuffer = [...currentBuffer, message]
-              // Limit buffer size for safety
-              if (newBuffer.length > MAX_BATCH_MESSAGES) {
-                newBuffer.splice(0, newBuffer.length - MAX_BATCH_MESSAGES)
+            currentBatchMessages.setState(
+              (currentBuffer: Array<Message<T>>) => {
+                const newBuffer = [...currentBuffer, message]
+                // Limit buffer size for safety
+                if (newBuffer.length > MAX_BATCH_MESSAGES) {
+                  newBuffer.splice(0, newBuffer.length - MAX_BATCH_MESSAGES)
+                }
+                return newBuffer
               }
-              return newBuffer
-            })
+            )
           }
 
           // Check for txids in the message and add them to our store
@@ -1104,17 +1110,19 @@ function createElectricSync<T extends Row<unknown>>(
           })
 
           // Always commit snapshots when we receive up-to-date, regardless of transaction state
-          seenSnapshots.setState((currentSnapshots: Array<PostgresSnapshot>) => {
-            const seen = [...currentSnapshots, ...newSnapshots]
-            newSnapshots.forEach((snapshot) =>
-              debug(
-                `${collectionId ? `[${collectionId}] ` : ``}new snapshot synced from pg %o`,
-                snapshot
+          seenSnapshots.setState(
+            (currentSnapshots: Array<PostgresSnapshot>) => {
+              const seen = [...currentSnapshots, ...newSnapshots]
+              newSnapshots.forEach((snapshot) =>
+                debug(
+                  `${collectionId ? `[${collectionId}] ` : ``}new snapshot synced from pg %o`,
+                  snapshot
+                )
               )
-            )
-            newSnapshots.length = 0
-            return seen
-          })
+              newSnapshots.length = 0
+              return seen
+            }
+          )
 
           // Resolve all matched pending matches on up-to-date
           resolveMatchedPendingMatches()
