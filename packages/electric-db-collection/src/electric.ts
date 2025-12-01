@@ -752,7 +752,7 @@ export function electricCollectionOptions(
 
         // Persist to storage if configured
         if (persistence) {
-          // Save collection state to localStorage
+          // Save collection state to storage adapter
           persistence.saveCollectionSnapshot(params.collection)
         }
 
@@ -760,7 +760,6 @@ export function electricCollectionOptions(
       }
     : undefined
 
-  // eslint-disable-next-line @typescript-eslint/require-await
   const clearPersistence: ClearPersistenceFn = async () => {
     if (!persistence) {
       throw new Error(`Persistence is not configured for this collection`)
@@ -768,7 +767,6 @@ export function electricCollectionOptions(
     persistence.clear()
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
   const getPersistenceSize: GetPersistenceSizeFn = async () =>
     persistence ? persistence.size() : 0
 
@@ -866,11 +864,10 @@ function createElectricSync<T extends Row<unknown>>(
   let unsubscribeStream: () => void
 
   return {
-    // Sync is called once on collection init
     sync: (params: Parameters<SyncConfig<T>[`sync`]>[0]) => {
       const { begin, write, commit, markReady, truncate, collection } = params
 
-      // Load from localStorage if persistence is configured
+      // Load from persistance adapter if persistence is configured
       if (persistence) {
         try {
           persistence.loadSnapshotInto(begin, (op) => write(op), commit)
@@ -930,13 +927,18 @@ function createElectricSync<T extends Row<unknown>>(
 
       // Read from persistence if available
       const prev = persistence?.read()
-      const computedOffset: Offset | undefined =
-        shapeOptions.offset ??
-        (prev?.lastOffset as Offset | undefined) ??
-        (syncMode === `on-demand` ? `now` : undefined)
+
+      const computedOffset: Offset | undefined = (() => {
+        const offset = shapeOptions.offset
+        if (offset != null) return offset
+        const lastOffset = prev?.lastOffset as Offset | undefined
+        if (lastOffset != null) return lastOffset
+        if (syncMode === "on-demand") return "now"
+        return undefined
+      })()
 
       const computedHandle: string | undefined =
-        (shapeOptions as any).shapeHandle ?? prev?.shapeHandle
+        shapeOptions.handle ?? prev?.shapeHandle
 
       const stream = new ShapeStream({
         ...shapeOptions,
