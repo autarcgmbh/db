@@ -261,6 +261,13 @@
 - Updated dependencies [[`c557a14`](https://github.com/TanStack/db/commit/c557a1488650ea9081b671a4ac278d55c59ac9cc), [`b5c87f7`](https://github.com/TanStack/db/commit/b5c87f71dbb534e4f1c660cf010e2cb6c0446ec5)]:
   - @tanstack/db@0.3.0
 
+## 0.2.10
+
+### Patch Changes
+
+- Updated dependencies [[`5f474f1`](https://github.com/TanStack/db/commit/5f474f1eabd57e144ba05b0f33d848f7efc8fb07)]:
+  - @tanstack/db@0.5.9
+
 ## 0.2.9
 
 ### Patch Changes
