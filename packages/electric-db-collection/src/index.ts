@@ -12,4 +12,4 @@ export {
 
 export * from "./errors"
 
-export type { StorageApi } from "./persistanceAdapter"
+export type { StorageApi } from "./persistence/persistenceAdapter"
