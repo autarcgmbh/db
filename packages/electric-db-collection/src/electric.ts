@@ -154,7 +154,7 @@ export interface ElectricCollectionConfig<
 
   /**
    * Optional persistence configuration for localStorage storage
-   * When provided, data will be persisted to localStorage and loaded on startup
+   * When provided, data will be persisted to localStorage or the specified storage and loaded on startup
    */
   persistence?: ElectricPersistenceConfig
   syncMode?: ElectricSyncMode
@@ -342,7 +342,7 @@ function createLoadSubsetDedupe<T extends Row<unknown>>({
       // Progressive mode snapshot phase: fetch and apply immediately
       const snapshotParams = compileSQL<T>(opts)
       try {
-        const { data: rows } = await stream.requestSnapshot(snapshotParams)
+        const { data: rows } = await stream.fetchSnapshot(snapshotParams)
 
         // Check again if we're still buffering - we might have received up-to-date
         // and completed the atomic swap while waiting for the snapshot
