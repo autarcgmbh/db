@@ -947,7 +947,7 @@ function createElectricSync<T extends Row<unknown>>(
         offset: computedOffset,
         handle: computedHandle,
         signal: abortController.signal,
-        onError: (errorParams: any) => {
+        onError: (errorParams) => {
           // Just immediately mark ready if there's an error to avoid blocking
           // apps waiting for `.preload()` to finish.
           // Note that Electric sends a 409 error on a `must-refetch` message, but the
