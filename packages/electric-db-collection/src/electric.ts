@@ -870,7 +870,11 @@ function createElectricSync<T extends Row<unknown>>(
       // Load from persistance adapter if persistence is configured
       if (persistence) {
         try {
-          persistence.loadSnapshotInto(begin, (op) => write(op), commit)
+          persistence.loadSnapshotInto(
+            begin,
+            (op) => write({ ...op, metadata: {} }),
+            commit
+          )
         } catch (e) {
           console.warn(`[ElectricPersistence] load error`, e)
         }
