@@ -39,7 +39,7 @@ import type {
 import type { StandardSchemaV1 } from "@standard-schema/spec"
 import {
   createPersistence,
-  ElectricPersistenceConfig,
+  type ElectricPersistenceConfig,
 } from "./persistence/createPersistence"
 
 // Re-export for user convenience in custom match functions
