@@ -1,9 +1,9 @@
 ---
-id: "@autarcgmbh/electric-db-collection"
-title: "@autarcgmbh/electric-db-collection"
+id: "@tanstack/electric-db-collection"
+title: "@tanstack/electric-db-collection"
 ---
 
-# @autarcgmbh/electric-db-collection
+# @tanstack/electric-db-collection
 
 ## Classes
 

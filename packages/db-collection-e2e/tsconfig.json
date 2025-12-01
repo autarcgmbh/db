@@ -17,7 +17,7 @@
     "paths": {
       "@tanstack/db": ["../db/src"],
       "@tanstack/db-ivm": ["../db-ivm/src"],
-      "@autarcgmbh/electric-db-collection": ["../electric-db-collection"],
+      "@tanstack/electric-db-collection": ["../electric-db-collection"],
       "@tanstack/query-db-collection": ["../query-db-collection"]
     }
   },

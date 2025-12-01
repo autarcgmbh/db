@@ -1,6 +1,6 @@
 {
   "name": "@tanstack/db-collection-e2e",
-  "version": "0.0.3",
+  "version": "0.0.11",
   "private": true,
   "description": "End-to-end test suite for TanStack DB collections",
   "type": "module",
@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@tanstack/db": "workspace:*",
-    "@autarcgmbh/electric-db-collection": "workspace:*",
+    "@tanstack/electric-db-collection": "workspace:*",
     "@tanstack/query-db-collection": "workspace:*",
     "pg": "^8.16.3"
   },
@@ -20,8 +20,8 @@
     "@types/pg": "^8.15.6",
     "@vitest/ui": "^3.2.4",
     "typescript": "^5.9.2",
-    "vite": "^7.2.2",
+    "vite": "^7.2.4",
     "vitest": "^3.2.4"
   },
-  "packageManager": "pnpm@10.22.0"
+  "packageManager": "pnpm@10.23.0"
 }
