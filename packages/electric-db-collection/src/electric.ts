@@ -6,13 +6,6 @@ import {
   isChangeMessage,
   isControlMessage,
   isVisibleInSnapshot,
-  ControlMessage,
-  GetExtensions,
-  Message,
-  Offset,
-  PostgresSnapshot,
-  Row,
-  ShapeStreamOptions,
 } from "@electric-sql/client"
 import {
   ExpectedNumberInAwaitTxIdError,
@@ -22,6 +15,15 @@ import {
 } from "./errors"
 import { compileSQL } from "./sql-compiler"
 import { validateJsonSerializable } from "./persistanceAdapter"
+import type {
+  ControlMessage,
+  GetExtensions,
+  Message,
+  Offset,
+  PostgresSnapshot,
+  Row,
+  ShapeStreamOptions,
+} from "@electric-sql/client"
 import type { StorageApi } from "./persistanceAdapter"
 
 import type {
@@ -1177,6 +1179,7 @@ function createElectricSync<T extends Row<unknown>>(
               newSnapshots.push(parseSnapshotMessage(message))
             }
             hasSnapshotEnd = true
+            if (persistenceConfig) hasSyncedChanges = true
           } else if (isUpToDateMessage(message)) {
             hasUpToDate = true
           } else if (isMustRefetchMessage(message)) {
