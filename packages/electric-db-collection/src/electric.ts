@@ -138,7 +138,7 @@ export type ElectricSyncMode = SyncMode | `progressive`
  * @template T - The type of items in the collection
  * @template TSchema - The schema type for validation
  */
-export type ElectricCollectionConfig<
+export interface ElectricCollectionConfig<
   T extends Row<unknown> = Row<unknown>,
   TSchema extends StandardSchemaV1 = never,
 > extends Omit<
@@ -340,7 +340,7 @@ function createLoadSubsetDedupe<T extends Row<unknown>>({
       // Progressive mode snapshot phase: fetch and apply immediately
       const snapshotParams = compileSQL<T>(opts)
       try {
-        const { data: rows } = await stream.fetchSnapshot(snapshotParams)
+        const { data: rows } = await stream.requestSnapshot(snapshotParams)
 
         // Check again if we're still buffering - we might have received up-to-date
         // and completed the atomic swap while waiting for the snapshot
@@ -903,10 +903,7 @@ export function electricCollectionOptions(
     onInsert: wrappedOnInsert,
     onUpdate: wrappedOnUpdate,
     onDelete: wrappedOnDelete,
-    utils: {
-      awaitTxId,
-      awaitMatch,
-    } as ElectricCollectionUtils<any>,
+    utils: utils as ElectricCollectionUtils<any>,
   }
 }
 
