@@ -1,67 +1,71 @@
-import {
-  consolidate,
-  filter,
-  join as joinOperator,
-  map,
-  tap,
-} from "@tanstack/db-ivm"
+import { filter, join as joinOperator, map, tap } from "@tanstack/db-ivm"
 import {
   CollectionInputNotFoundError,
   InvalidJoinCondition,
-  InvalidJoinConditionLeftTableError,
-  InvalidJoinConditionRightTableError,
-  InvalidJoinConditionSameTableError,
-  InvalidJoinConditionTableMismatchError,
+  InvalidJoinConditionLeftSourceError,
+  InvalidJoinConditionRightSourceError,
+  InvalidJoinConditionSameSourceError,
+  InvalidJoinConditionSourceMismatchError,
   JoinCollectionNotFoundError,
+  SubscriptionNotFoundError,
   UnsupportedJoinSourceTypeError,
   UnsupportedJoinTypeError,
 } from "../../errors.js"
-import { findIndexForField } from "../../utils/index-optimization.js"
 import { ensureIndexForField } from "../../indexes/auto-index.js"
+import { PropRef, followRef } from "../ir.js"
+import { inArray } from "../builder/functions.js"
 import { compileExpression } from "./evaluators.js"
-import { compileQuery, followRef } from "./index.js"
+import type { CompileQueryFn } from "./index.js"
 import type { OrderByOptimizationInfo } from "./order-by.js"
 import type {
   BasicExpression,
   CollectionRef,
   JoinClause,
-  PropRef,
   QueryIR,
   QueryRef,
 } from "../ir.js"
 import type { IStreamBuilder, JoinType } from "@tanstack/db-ivm"
-import type { Collection } from "../../collection.js"
+import type { Collection } from "../../collection/index.js"
 import type {
   KeyedStream,
   NamespacedAndKeyedStream,
   NamespacedRow,
 } from "../../types.js"
-import type { QueryCache, QueryMapping } from "./types.js"
-import type { BaseIndex } from "../../indexes/base-index.js"
+import type { QueryCache, QueryMapping, WindowOptions } from "./types.js"
+import type { CollectionSubscription } from "../../collection/subscription.js"
 
+/** Function type for loading specific keys into a lazy collection */
 export type LoadKeysFn = (key: Set<string | number>) => void
+
+/** Callbacks for managing lazy-loaded collections in optimized joins */
 export type LazyCollectionCallbacks = {
   loadKeys: LoadKeysFn
   loadInitialState: () => void
 }
 
 /**
- * Processes all join clauses in a query
+ * Processes all join clauses, applying lazy loading optimizations and maintaining
+ * alias tracking for per-alias subscriptions (enables self-joins).
  */
 export function processJoins(
   pipeline: NamespacedAndKeyedStream,
   joinClauses: Array<JoinClause>,
-  tables: Record<string, KeyedStream>,
-  mainTableId: string,
-  mainTableAlias: string,
+  sources: Record<string, KeyedStream>,
+  mainCollectionId: string,
+  mainSource: string,
   allInputs: Record<string, KeyedStream>,
   cache: QueryCache,
   queryMapping: QueryMapping,
   collections: Record<string, Collection>,
+  subscriptions: Record<string, CollectionSubscription>,
   callbacks: Record<string, LazyCollectionCallbacks>,
-  lazyCollections: Set<string>,
+  lazySources: Set<string>,
   optimizableOrderByCollections: Record<string, OrderByOptimizationInfo>,
-  rawQuery: QueryIR
+  setWindowFn: (windowFn: (options: WindowOptions) => void) => void,
+  rawQuery: QueryIR,
+  onCompileSubquery: CompileQueryFn,
+  aliasToCollectionId: Record<string, string>,
+  aliasRemapping: Record<string, string>
 ): NamespacedAndKeyedStream {
   let resultPipeline = pipeline
 
@@ -69,17 +73,22 @@ export function processJoins(
     resultPipeline = processJoin(
       resultPipeline,
       joinClause,
-      tables,
-      mainTableId,
-      mainTableAlias,
+      sources,
+      mainCollectionId,
+      mainSource,
       allInputs,
       cache,
       queryMapping,
       collections,
+      subscriptions,
       callbacks,
-      lazyCollections,
+      lazySources,
       optimizableOrderByCollections,
-      rawQuery
+      setWindowFn,
+      rawQuery,
+      onCompileSubquery,
+      aliasToCollectionId,
+      aliasRemapping
     )
   }
 
@@ -87,66 +96,84 @@ export function processJoins(
 }
 
 /**
- * Processes a single join clause
+ * Processes a single join clause with lazy loading optimization.
+ * For LEFT/RIGHT/INNER joins, marks one side as "lazy" (loads on-demand based on join keys).
  */
 function processJoin(
   pipeline: NamespacedAndKeyedStream,
   joinClause: JoinClause,
-  tables: Record<string, KeyedStream>,
-  mainTableId: string,
-  mainTableAlias: string,
+  sources: Record<string, KeyedStream>,
+  mainCollectionId: string,
+  mainSource: string,
   allInputs: Record<string, KeyedStream>,
   cache: QueryCache,
   queryMapping: QueryMapping,
   collections: Record<string, Collection>,
+  subscriptions: Record<string, CollectionSubscription>,
   callbacks: Record<string, LazyCollectionCallbacks>,
-  lazyCollections: Set<string>,
+  lazySources: Set<string>,
   optimizableOrderByCollections: Record<string, OrderByOptimizationInfo>,
-  rawQuery: QueryIR
+  setWindowFn: (windowFn: (options: WindowOptions) => void) => void,
+  rawQuery: QueryIR,
+  onCompileSubquery: CompileQueryFn,
+  aliasToCollectionId: Record<string, string>,
+  aliasRemapping: Record<string, string>
 ): NamespacedAndKeyedStream {
-  // Get the joined table alias and input stream
+  const isCollectionRef = joinClause.from.type === `collectionRef`
+
+  // Get the joined source alias and input stream
   const {
-    alias: joinedTableAlias,
+    alias: joinedSource,
     input: joinedInput,
     collectionId: joinedCollectionId,
   } = processJoinSource(
     joinClause.from,
     allInputs,
     collections,
+    subscriptions,
     callbacks,
-    lazyCollections,
+    lazySources,
     optimizableOrderByCollections,
+    setWindowFn,
     cache,
-    queryMapping
+    queryMapping,
+    onCompileSubquery,
+    aliasToCollectionId,
+    aliasRemapping
   )
 
-  // Add the joined table to the tables map
-  tables[joinedTableAlias] = joinedInput
+  // Add the joined source to the sources map
+  sources[joinedSource] = joinedInput
+  if (isCollectionRef) {
+    // Only direct collection references form new alias bindings. Subquery
+    // aliases reuse the mapping returned from the recursive compilation above.
+    aliasToCollectionId[joinedSource] = joinedCollectionId
+  }
 
-  const mainCollection = collections[mainTableId]
+  const mainCollection = collections[mainCollectionId]
   const joinedCollection = collections[joinedCollectionId]
 
   if (!mainCollection) {
-    throw new JoinCollectionNotFoundError(mainTableId)
+    throw new JoinCollectionNotFoundError(mainCollectionId)
   }
 
   if (!joinedCollection) {
     throw new JoinCollectionNotFoundError(joinedCollectionId)
   }
 
-  const { activeCollection, lazyCollection } = getActiveAndLazyCollections(
+  const { activeSource, lazySource } = getActiveAndLazySources(
     joinClause.type,
     mainCollection,
     joinedCollection
   )
 
-  // Analyze which table each expression refers to and swap if necessary
-  const availableTableAliases = Object.keys(tables)
+  // Analyze which source each expression refers to and swap if necessary
+  const availableSources = Object.keys(sources)
   const { mainExpr, joinedExpr } = analyzeJoinExpressions(
     joinClause.left,
     joinClause.right,
-    availableTableAliases,
-    joinedTableAlias
+    availableSources,
+    joinedSource
   )
 
   // Pre-compile the join expressions
@@ -156,7 +183,7 @@ function processJoin(
   // Prepare the main pipeline for joining
   let mainPipeline = pipeline.pipe(
     map(([currentKey, namespacedRow]) => {
-      // Extract the join key from the main table expression
+      // Extract the join key from the main source expression
       const mainKey = compiledMainExpr(namespacedRow)
 
       // Return [joinKey, [originalKey, namespacedRow]]
@@ -171,9 +198,9 @@ function processJoin(
   let joinedPipeline = joinedInput.pipe(
     map(([currentKey, row]) => {
       // Wrap the row in a namespaced structure
-      const namespacedRow: NamespacedRow = { [joinedTableAlias]: row }
+      const namespacedRow: NamespacedRow = { [joinedSource]: row }
 
-      // Extract the join key from the joined table expression
+      // Extract the join key from the joined source expression
       const joinedKey = compiledJoinedExpr(namespacedRow)
 
       // Return [joinKey, [originalKey, namespacedRow]]
@@ -189,43 +216,46 @@ function processJoin(
     throw new UnsupportedJoinTypeError(joinClause.type)
   }
 
-  if (activeCollection) {
+  if (activeSource) {
     // If the lazy collection comes from a subquery that has a limit and/or an offset clause
     // then we need to deoptimize the join because we don't know which rows are in the result set
     // since we simply lookup matching keys in the index but the index contains all rows
     // (not just the ones that pass the limit and offset clauses)
-    const lazyFrom =
-      activeCollection === `main` ? joinClause.from : rawQuery.from
+    const lazyFrom = activeSource === `main` ? joinClause.from : rawQuery.from
     const limitedSubquery =
       lazyFrom.type === `queryRef` &&
       (lazyFrom.query.limit || lazyFrom.query.offset)
 
-    if (!limitedSubquery) {
+    // If join expressions contain computed values (like concat functions)
+    // we don't optimize the join because we don't have an index over the computed values
+    const hasComputedJoinExpr =
+      mainExpr.type === `func` || joinedExpr.type === `func`
+
+    if (!limitedSubquery && !hasComputedJoinExpr) {
       // This join can be optimized by having the active collection
       // dynamically load keys into the lazy collection
       // based on the value of the joinKey and by looking up
       // matching rows in the index of the lazy collection
 
-      // Mark the lazy collection as lazy
+      // Mark the lazy source alias as lazy
       // this Set is passed by the liveQueryCollection to the compiler
       // such that the liveQueryCollection can check it after compilation
-      // to know which collections are lazy collections
-      lazyCollections.add(lazyCollection.id)
+      // to know which source aliases should load data lazily (not initially)
+      const lazyAlias = activeSource === `main` ? joinedSource : mainSource
+      lazySources.add(lazyAlias)
 
       const activePipeline =
-        activeCollection === `main` ? mainPipeline : joinedPipeline
+        activeSource === `main` ? mainPipeline : joinedPipeline
 
-      let index: BaseIndex<string | number> | undefined
-
-      const lazyCollectionJoinExpr =
-        activeCollection === `main`
+      const lazySourceJoinExpr =
+        activeSource === `main`
           ? (joinedExpr as PropRef)
           : (mainExpr as PropRef)
 
       const followRefResult = followRef(
         rawQuery,
-        lazyCollectionJoinExpr,
-        lazyCollection
+        lazySourceJoinExpr,
+        lazySource
       )!
       const followRefCollection = followRefResult.collection
 
@@ -238,55 +268,51 @@ function processJoin(
         )
       }
 
-      let deoptimized = false
-
+      // Set up lazy loading: intercept active side's stream and dynamically load
+      // matching rows from lazy side based on join keys.
       const activePipelineWithLoading: IStreamBuilder<
         [key: unknown, [originalKey: string, namespacedRow: NamespacedRow]]
       > = activePipeline.pipe(
         tap((data) => {
-          if (deoptimized) {
-            return
-          }
+          // Find the subscription for lazy loading.
+          // Subscriptions are keyed by the innermost alias (where the collection subscription
+          // was actually created). For subqueries, the join alias may differ from the inner alias.
+          // aliasRemapping provides a flattened one-hop lookup from outer → innermost alias.
+          // Example: .join({ activeUser: subquery }) where subquery uses .from({ user: collection })
+          // → aliasRemapping['activeUser'] = 'user' (always maps directly to innermost, never recursive)
+          const resolvedAlias = aliasRemapping[lazyAlias] || lazyAlias
+          const lazySourceSubscription = subscriptions[resolvedAlias]
 
-          // Find the index for the path we join on
-          // we need to find the index inside the map operator
-          // because the indexes are only available after the initial sync
-          // so we can't fetch it during compilation
-          index ??= findIndexForField(
-            followRefCollection.indexes,
-            followRefResult.path
-          )
-
-          // The `callbacks` object is passed by the liveQueryCollection to the compiler.
-          // It contains a function to lazy load keys for each lazy collection
-          // as well as a function to switch back to a regular collection
-          // (useful when there's no index for available for lazily loading the collection)
-          const collectionCallbacks = callbacks[lazyCollection.id]
-          if (!collectionCallbacks) {
-            throw new Error(
-              `Internal error: callbacks for collection are missing in join pipeline. Make sure the live query collection sets them before running the pipeline.`
+          if (!lazySourceSubscription) {
+            throw new SubscriptionNotFoundError(
+              resolvedAlias,
+              lazyAlias,
+              lazySource.id,
+              Object.keys(subscriptions)
             )
           }
 
-          const { loadKeys, loadInitialState } = collectionCallbacks
+          if (lazySourceSubscription.hasLoadedInitialState()) {
+            // Entire state was already loaded because we deoptimized the join
+            return
+          }
 
-          if (index && index.supports(`in`)) {
-            // Use the index to fetch the PKs of the rows in the lazy collection
-            // that match this row from the active collection based on the value of the joinKey
-            const joinKeys = data.getInner().map(([[joinKey]]) => joinKey)
-            const matchingKeys = index.lookup(`in`, joinKeys)
-            // Inform the lazy collection that those keys need to be loaded
-            loadKeys(matchingKeys)
-          } else {
-            // We can't optimize the join because there is no index for the join key
-            // on the lazy collection, so we load the initial state
-            deoptimized = true
-            loadInitialState()
+          // Request filtered snapshot from lazy collection for matching join keys
+          const joinKeys = data.getInner().map(([[joinKey]]) => joinKey)
+          const lazyJoinRef = new PropRef(followRefResult.path)
+          const loaded = lazySourceSubscription.requestSnapshot({
+            where: inArray(lazyJoinRef, joinKeys),
+            optimizedOnly: true,
+          })
+
+          if (!loaded) {
+            // Snapshot wasn't sent because it could not be loaded from the indexes
+            lazySourceSubscription.requestSnapshot()
           }
         })
       )
 
-      if (activeCollection === `main`) {
+      if (activeSource === `main`) {
         mainPipeline = activePipelineWithLoading
       } else {
         joinedPipeline = activePipelineWithLoading
@@ -296,68 +322,66 @@ function processJoin(
 
   return mainPipeline.pipe(
     joinOperator(joinedPipeline, joinClause.type as JoinType),
-    consolidate(),
     processJoinResults(joinClause.type)
   )
 }
 
 /**
- * Analyzes join expressions to determine which refers to which table
- * and returns them in the correct order (available table expression first, joined table expression second)
+ * Analyzes join expressions to determine which refers to which source
+ * and returns them in the correct order (available source expression first, joined source expression second)
  */
 function analyzeJoinExpressions(
   left: BasicExpression,
   right: BasicExpression,
-  allAvailableTableAliases: Array<string>,
-  joinedTableAlias: string
+  allAvailableSourceAliases: Array<string>,
+  joinedSource: string
 ): { mainExpr: BasicExpression; joinedExpr: BasicExpression } {
-  // Filter out the joined table alias from the available table aliases
-  const availableTableAliases = allAvailableTableAliases.filter(
-    (alias) => alias !== joinedTableAlias
+  // Filter out the joined source alias from the available source aliases
+  const availableSources = allAvailableSourceAliases.filter(
+    (alias) => alias !== joinedSource
   )
 
-  const leftTableAlias = getTableAliasFromExpression(left)
-  const rightTableAlias = getTableAliasFromExpression(right)
+  const leftSourceAlias = getSourceAliasFromExpression(left)
+  const rightSourceAlias = getSourceAliasFromExpression(right)
 
-  // If left expression refers to an available table and right refers to joined table, keep as is
+  // If left expression refers to an available source and right refers to joined source, keep as is
   if (
-    leftTableAlias &&
-    availableTableAliases.includes(leftTableAlias) &&
-    rightTableAlias === joinedTableAlias
+    leftSourceAlias &&
+    availableSources.includes(leftSourceAlias) &&
+    rightSourceAlias === joinedSource
   ) {
     return { mainExpr: left, joinedExpr: right }
   }
 
-  // If left expression refers to joined table and right refers to an available table, swap them
+  // If left expression refers to joined source and right refers to an available source, swap them
   if (
-    leftTableAlias === joinedTableAlias &&
-    rightTableAlias &&
-    availableTableAliases.includes(rightTableAlias)
+    leftSourceAlias === joinedSource &&
+    rightSourceAlias &&
+    availableSources.includes(rightSourceAlias)
   ) {
     return { mainExpr: right, joinedExpr: left }
   }
 
-  // If one expression doesn't refer to any table, this is an invalid join
-  if (!leftTableAlias || !rightTableAlias) {
-    // For backward compatibility, use the first available table alias in error message
-    throw new InvalidJoinConditionTableMismatchError()
+  // If one expression doesn't refer to any source, this is an invalid join
+  if (!leftSourceAlias || !rightSourceAlias) {
+    throw new InvalidJoinConditionSourceMismatchError()
   }
 
   // If both expressions refer to the same alias, this is an invalid join
-  if (leftTableAlias === rightTableAlias) {
-    throw new InvalidJoinConditionSameTableError(leftTableAlias)
+  if (leftSourceAlias === rightSourceAlias) {
+    throw new InvalidJoinConditionSameSourceError(leftSourceAlias)
   }
 
-  // Left side must refer to an available table
+  // Left side must refer to an available source
   // This cannot happen with the query builder as there is no way to build a ref
-  // to an unavailable table, but just in case, but could happen with the IR
-  if (!availableTableAliases.includes(leftTableAlias)) {
-    throw new InvalidJoinConditionLeftTableError(leftTableAlias)
+  // to an unavailable source, but just in case, but could happen with the IR
+  if (!availableSources.includes(leftSourceAlias)) {
+    throw new InvalidJoinConditionLeftSourceError(leftSourceAlias)
   }
 
-  // Right side must refer to the joined table
-  if (rightTableAlias !== joinedTableAlias) {
-    throw new InvalidJoinConditionRightTableError(joinedTableAlias)
+  // Right side must refer to the joined source
+  if (rightSourceAlias !== joinedSource) {
+    throw new InvalidJoinConditionRightSourceError(joinedSource)
   }
 
   // This should not be reachable given the logic above, but just in case
@@ -365,27 +389,27 @@ function analyzeJoinExpressions(
 }
 
 /**
- * Extracts the table alias from a join expression
+ * Extracts the source alias from a join expression
  */
-function getTableAliasFromExpression(expr: BasicExpression): string | null {
+function getSourceAliasFromExpression(expr: BasicExpression): string | null {
   switch (expr.type) {
     case `ref`:
-      // PropRef path has the table alias as the first element
+      // PropRef path has the source alias as the first element
       return expr.path[0] || null
     case `func`: {
-      // For function expressions, we need to check if all arguments refer to the same table
-      const tableAliases = new Set<string>()
+      // For function expressions, we need to check if all arguments refer to the same source
+      const sourceAliases = new Set<string>()
       for (const arg of expr.args) {
-        const alias = getTableAliasFromExpression(arg)
+        const alias = getSourceAliasFromExpression(arg)
         if (alias) {
-          tableAliases.add(alias)
+          sourceAliases.add(alias)
         }
       }
-      // If all arguments refer to the same table, return that table alias
-      return tableAliases.size === 1 ? Array.from(tableAliases)[0]! : null
+      // If all arguments refer to the same source, return that source alias
+      return sourceAliases.size === 1 ? Array.from(sourceAliases)[0]! : null
     }
     default:
-      // Values (type='val') don't reference any table
+      // Values (type='val') don't reference any source
       return null
   }
 }
@@ -397,18 +421,28 @@ function processJoinSource(
   from: CollectionRef | QueryRef,
   allInputs: Record<string, KeyedStream>,
   collections: Record<string, Collection>,
+  subscriptions: Record<string, CollectionSubscription>,
   callbacks: Record<string, LazyCollectionCallbacks>,
-  lazyCollections: Set<string>,
+  lazySources: Set<string>,
   optimizableOrderByCollections: Record<string, OrderByOptimizationInfo>,
+  setWindowFn: (windowFn: (options: WindowOptions) => void) => void,
   cache: QueryCache,
-  queryMapping: QueryMapping
+  queryMapping: QueryMapping,
+  onCompileSubquery: CompileQueryFn,
+  aliasToCollectionId: Record<string, string>,
+  aliasRemapping: Record<string, string>
 ): { alias: string; input: KeyedStream; collectionId: string } {
   switch (from.type) {
     case `collectionRef`: {
-      const input = allInputs[from.collection.id]
+      const input = allInputs[from.alias]
       if (!input) {
-        throw new CollectionInputNotFoundError(from.collection.id)
+        throw new CollectionInputNotFoundError(
+          from.alias,
+          from.collection.id,
+          Object.keys(allInputs)
+        )
       }
+      aliasToCollectionId[from.alias] = from.collection.id
       return { alias: from.alias, input, collectionId: from.collection.id }
     }
     case `queryRef`: {
@@ -416,16 +450,44 @@ function processJoinSource(
       const originalQuery = queryMapping.get(from.query) || from.query
 
       // Recursively compile the sub-query with cache
-      const subQueryResult = compileQuery(
+      const subQueryResult = onCompileSubquery(
         originalQuery,
         allInputs,
         collections,
+        subscriptions,
         callbacks,
-        lazyCollections,
+        lazySources,
         optimizableOrderByCollections,
+        setWindowFn,
         cache,
         queryMapping
       )
+
+      // Pull up alias mappings from subquery to parent scope.
+      // This includes both the innermost alias-to-collection mappings AND
+      // any existing remappings from nested subquery levels.
+      Object.assign(aliasToCollectionId, subQueryResult.aliasToCollectionId)
+      Object.assign(aliasRemapping, subQueryResult.aliasRemapping)
+
+      // Create a flattened remapping from outer alias to innermost alias.
+      // For nested subqueries, this ensures one-hop lookups (not recursive chains).
+      //
+      // Example with 3-level nesting:
+      //   Inner:  .from({ user: usersCollection })
+      //   Middle: .from({ activeUser: innerSubquery })     → creates: activeUser → user
+      //   Outer:  .join({ author: middleSubquery }, ...)   → creates: author → user (not author → activeUser)
+      //
+      // We search through the PULLED-UP aliasToCollectionId (which contains the
+      // innermost 'user' alias), so we always map directly to the deepest level.
+      // This means aliasRemapping[lazyAlias] is always a single lookup, never recursive.
+      const innerAlias = Object.keys(subQueryResult.aliasToCollectionId).find(
+        (alias) =>
+          subQueryResult.aliasToCollectionId[alias] ===
+          subQueryResult.collectionId
+      )
+      if (innerAlias && innerAlias !== from.alias) {
+        aliasRemapping[from.alias] = innerAlias
+      }
 
       // Extract the pipeline from the compilation result
       const subQueryInput = subQueryResult.pipeline
@@ -520,41 +582,35 @@ function processJoinResults(joinType: string) {
 /**
  * Returns the active and lazy collections for a join clause.
  * The active collection is the one that we need to fully iterate over
- * and it can be the main table (i.e. left collection) or the joined table (i.e. right collection).
+ * and it can be the main source (i.e. left collection) or the joined source (i.e. right collection).
  * The lazy collection is the one that we should join-in lazily based on matches in the active collection.
  * @param joinClause - The join clause to analyze
  * @param leftCollection - The left collection
  * @param rightCollection - The right collection
  * @returns The active and lazy collections. They are undefined if we need to loop over both collections (i.e. both are active)
  */
-function getActiveAndLazyCollections(
+function getActiveAndLazySources(
   joinType: JoinClause[`type`],
   leftCollection: Collection,
   rightCollection: Collection
 ):
-  | { activeCollection: `main` | `joined`; lazyCollection: Collection }
-  | { activeCollection: undefined; lazyCollection: undefined } {
-  if (leftCollection.id === rightCollection.id) {
-    // We can't apply this optimization if there's only one collection
-    // because `liveQueryCollection` will detect that the collection is lazy
-    // and treat it lazily (because the collection is shared)
-    // and thus it will not load any keys because both sides of the join
-    // will be handled lazily
-    return { activeCollection: undefined, lazyCollection: undefined }
-  }
+  | { activeSource: `main` | `joined`; lazySource: Collection }
+  | { activeSource: undefined; lazySource: undefined } {
+  // Self-joins can now be optimized since we track lazy loading by source alias
+  // rather than collection ID. Each alias has its own subscription and lazy state.
 
   switch (joinType) {
     case `left`:
-      return { activeCollection: `main`, lazyCollection: rightCollection }
+      return { activeSource: `main`, lazySource: rightCollection }
     case `right`:
-      return { activeCollection: `joined`, lazyCollection: leftCollection }
+      return { activeSource: `joined`, lazySource: leftCollection }
     case `inner`:
       // The smallest collection should be the active collection
       // and the biggest collection should be lazy
       return leftCollection.size < rightCollection.size
-        ? { activeCollection: `main`, lazyCollection: rightCollection }
-        : { activeCollection: `joined`, lazyCollection: leftCollection }
+        ? { activeSource: `main`, lazySource: rightCollection }
+        : { activeSource: `joined`, lazySource: leftCollection }
     default:
-      return { activeCollection: undefined, lazyCollection: undefined }
+      return { activeSource: undefined, lazySource: undefined }
   }
 }

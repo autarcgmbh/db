@@ -1,5 +1,5 @@
 import { createCollection } from "@tanstack/react-db"
-import { electricCollectionOptions } from "@tanstack/electric-db-collection"
+import { electricCollectionOptions } from "@autarcgmbh/electric-db-collection"
 import { queryCollectionOptions } from "@tanstack/query-db-collection"
 import { trailBaseCollectionOptions } from "@tanstack/trailbase-db-collection"
 import { QueryClient } from "@tanstack/query-core"

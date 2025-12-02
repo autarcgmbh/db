@@ -1,4 +1,4 @@
-import { CollectionImpl } from "../../collection.js"
+import { CollectionImpl } from "../../collection/index.js"
 import {
   Aggregate as AggregateExpr,
   CollectionRef,
@@ -10,13 +10,14 @@ import {
 } from "../ir.js"
 import {
   InvalidSourceError,
+  InvalidSourceTypeError,
   JoinConditionMustBeEqualityError,
   OnlyOneSourceAllowedError,
   QueryMustHaveFromClauseError,
   SubQueryMustHaveFromClauseError,
 } from "../../errors.js"
 import { createRefProxy, toExpression } from "./ref-proxy.js"
-import type { NamespacedRow } from "../../types.js"
+import type { NamespacedRow, SingleResult } from "../../types.js"
 import type {
   Aggregate,
   BasicExpression,
@@ -60,13 +61,38 @@ export class BaseQueryBuilder<TContext extends Context = Context> {
     source: TSource,
     context: string
   ): [string, CollectionRef | QueryRef] {
-    if (Object.keys(source).length !== 1) {
+    // Validate source is a plain object (not null, array, string, etc.)
+    // We use try-catch to handle null/undefined gracefully
+    let keys: Array<string>
+    try {
+      keys = Object.keys(source)
+    } catch {
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      const type = source === null ? `null` : `undefined`
+      throw new InvalidSourceTypeError(context, type)
+    }
+
+    // Check if it's an array (arrays pass Object.keys but aren't valid sources)
+    if (Array.isArray(source)) {
+      throw new InvalidSourceTypeError(context, `array`)
+    }
+
+    // Validate exactly one key
+    if (keys.length !== 1) {
+      if (keys.length === 0) {
+        throw new InvalidSourceTypeError(context, `empty object`)
+      }
+      // Check if it looks like a string was passed (has numeric keys)
+      if (keys.every((k) => !isNaN(Number(k)))) {
+        throw new InvalidSourceTypeError(context, `string`)
+      }
       throw new OnlyOneSourceAllowedError(context)
     }
 
-    const alias = Object.keys(source)[0]!
+    const alias = keys[0]!
     const sourceValue = source[alias]
 
+    // Validate the value is a Collection or QueryBuilder
     let ref: CollectionRef | QueryRef
 
     if (sourceValue instanceof CollectionImpl) {
@@ -469,11 +495,11 @@ export class BaseQueryBuilder<TContext extends Context = Context> {
 
     const opts: CompareOptions =
       typeof options === `string`
-        ? { direction: options, nulls: `first`, stringSort: `locale` }
+        ? { direction: options, nulls: `first` }
         : {
             direction: options.direction ?? `asc`,
             nulls: options.nulls ?? `first`,
-            stringSort: options.stringSort ?? `locale`,
+            stringSort: options.stringSort,
             locale:
               options.stringSort === `locale` ? options.locale : undefined,
             localeOptions:
@@ -613,6 +639,28 @@ export class BaseQueryBuilder<TContext extends Context = Context> {
       ...this.query,
       distinct: true,
     }) as any
+  }
+
+  /**
+   * Specify that the query should return a single result
+   * @returns A QueryBuilder that returns the first result
+   *
+   * @example
+   * ```ts
+   * // Get the user matching the query
+   * query
+   *   .from({ users: usersCollection })
+   *   .where(({users}) => eq(users.id, 1))
+   *   .findOne()
+   *```
+   */
+  findOne(): QueryBuilder<TContext & SingleResult> {
+    return new BaseQueryBuilder({
+      ...this.query,
+      // TODO: enforcing return only one result with also a default orderBy if none is specified
+      // limit: 1,
+      singleResult: true,
+    })
   }
 
   // Helper methods
@@ -817,4 +865,10 @@ export type ExtractContext<T> =
       : never
 
 // Export the types from types.ts for convenience
-export type { Context, Source, GetResult, RefLeaf as Ref } from "./types.js"
+export type {
+  Context,
+  Source,
+  GetResult,
+  RefLeaf as Ref,
+  InferResultType,
+} from "./types.js"

@@ -131,7 +131,6 @@ import {
   getWhereExpression,
   isResidualWhere,
 } from "./ir.js"
-import { isConvertibleToCollectionFilter } from "./compiler/expressions.js"
 import type { BasicExpression, From, QueryIR, Select, Where } from "./ir.js"
 
 /**
@@ -142,6 +141,8 @@ export interface AnalyzedWhereClause {
   expression: BasicExpression<boolean>
   /** Set of table/source aliases that this WHERE clause touches */
   touchedSources: Set<string>
+  /** Whether this clause contains namespace-only references that prevent pushdown */
+  hasNamespaceOnlyRef: boolean
 }
 
 /**
@@ -160,8 +161,8 @@ export interface GroupedWhereClauses {
 export interface OptimizationResult {
   /** The optimized query with WHERE clauses potentially moved to subqueries */
   optimizedQuery: QueryIR
-  /** Map of collection aliases to their extracted WHERE clauses for index optimization */
-  collectionWhereClauses: Map<string, BasicExpression<boolean>>
+  /** Map of source aliases to their extracted WHERE clauses for index optimization */
+  sourceWhereClauses: Map<string, BasicExpression<boolean>>
 }
 
 /**
@@ -182,14 +183,14 @@ export interface OptimizationResult {
  *   where: [eq(u.dept_id, 1), gt(p.views, 100)]
  * }
  *
- * const { optimizedQuery, collectionWhereClauses } = optimizeQuery(originalQuery)
+ * const { optimizedQuery, sourceWhereClauses } = optimizeQuery(originalQuery)
  * // Result: Single-source clauses moved to deepest possible subqueries
- * // collectionWhereClauses: Map { 'u' => eq(u.dept_id, 1), 'p' => gt(p.views, 100) }
+ * // sourceWhereClauses: Map { 'u' => eq(u.dept_id, 1), 'p' => gt(p.views, 100) }
  * ```
  */
 export function optimizeQuery(query: QueryIR): OptimizationResult {
-  // First, extract collection WHERE clauses before optimization
-  const collectionWhereClauses = extractCollectionWhereClauses(query)
+  // First, extract source WHERE clauses before optimization
+  const sourceWhereClauses = extractSourceWhereClauses(query)
 
   // Apply multi-level predicate pushdown with iterative convergence
   let optimized = query
@@ -212,7 +213,7 @@ export function optimizeQuery(query: QueryIR): OptimizationResult {
 
   return {
     optimizedQuery: cleaned,
-    collectionWhereClauses,
+    sourceWhereClauses,
   }
 }
 
@@ -222,16 +223,16 @@ export function optimizeQuery(query: QueryIR): OptimizationResult {
  * to specific collections, but only for simple queries without joins.
  *
  * @param query - The original QueryIR to analyze
- * @returns Map of collection aliases to their WHERE clauses
+ * @returns Map of source aliases to their WHERE clauses
  */
-function extractCollectionWhereClauses(
+function extractSourceWhereClauses(
   query: QueryIR
 ): Map<string, BasicExpression<boolean>> {
-  const collectionWhereClauses = new Map<string, BasicExpression<boolean>>()
+  const sourceWhereClauses = new Map<string, BasicExpression<boolean>>()
 
   // Only analyze queries that have WHERE clauses
   if (!query.where || query.where.length === 0) {
-    return collectionWhereClauses
+    return sourceWhereClauses
   }
 
   // Split all AND clauses at the root level for granular analysis
@@ -246,18 +247,14 @@ function extractCollectionWhereClauses(
   const groupedClauses = groupWhereClauses(analyzedClauses)
 
   // Only include single-source clauses that reference collections directly
-  // and can be converted to BasicExpression format for collection indexes
   for (const [sourceAlias, whereClause] of groupedClauses.singleSource) {
     // Check if this source alias corresponds to a collection reference
     if (isCollectionReference(query, sourceAlias)) {
-      // Check if the WHERE clause can be converted to collection-compatible format
-      if (isConvertibleToCollectionFilter(whereClause)) {
-        collectionWhereClauses.set(sourceAlias, whereClause)
-      }
+      sourceWhereClauses.set(sourceAlias, whereClause)
     }
   }
 
-  return collectionWhereClauses
+  return sourceWhereClauses
 }
 
 /**
@@ -328,9 +325,22 @@ function applySingleLevelOptimization(query: QueryIR): QueryIR {
     return query
   }
 
-  // Skip optimization if there are no joins - predicate pushdown only benefits joins
-  // Single-table queries don't benefit from this optimization
+  // For queries without joins, combine multiple WHERE clauses into a single clause
+  // to avoid creating multiple filter operators in the pipeline
   if (!query.join || query.join.length === 0) {
+    // Only optimize if there are multiple WHERE clauses to combine
+    if (query.where.length > 1) {
+      // Combine multiple WHERE clauses into a single AND expression
+      const splitWhereClauses = splitAndClauses(query.where)
+      const combinedWhere = combineWithAnd(splitWhereClauses)
+
+      return {
+        ...query,
+        where: [combinedWhere],
+      }
+    }
+
+    // For single WHERE clauses, no optimization needed
     return query
   }
 
@@ -486,19 +496,31 @@ function splitAndClausesRecursive(
  * This determines whether a clause can be pushed down to a specific table
  * or must remain in the main query (for multi-source clauses like join conditions).
  *
+ * Special handling for namespace-only references in outer joins:
+ * WHERE clauses that reference only a table namespace (e.g., isUndefined(special), eq(special, value))
+ * rather than specific properties (e.g., isUndefined(special.id), eq(special.id, value)) are treated as
+ * multi-source to prevent incorrect predicate pushdown that would change join semantics.
+ *
  * @param clause - The WHERE expression to analyze
  * @returns Analysis result with the expression and touched source aliases
  *
  * @example
  * ```typescript
- * // eq(users.department_id, 1) -> touches ['users']
- * // eq(users.id, posts.user_id) -> touches ['users', 'posts']
+ * // eq(users.department_id, 1) -> touches ['users'], hasNamespaceOnlyRef: false
+ * // eq(users.id, posts.user_id) -> touches ['users', 'posts'], hasNamespaceOnlyRef: false
+ * // isUndefined(special) -> touches ['special'], hasNamespaceOnlyRef: true (prevents pushdown)
+ * // eq(special, someValue) -> touches ['special'], hasNamespaceOnlyRef: true (prevents pushdown)
+ * // isUndefined(special.id) -> touches ['special'], hasNamespaceOnlyRef: false (allows pushdown)
+ * // eq(special.id, 5) -> touches ['special'], hasNamespaceOnlyRef: false (allows pushdown)
  * ```
  */
 function analyzeWhereClause(
   clause: BasicExpression<boolean>
 ): AnalyzedWhereClause {
+  // Track which table aliases this WHERE clause touches
   const touchedSources = new Set<string>()
+  // Track whether this clause contains namespace-only references that prevent pushdown
+  let hasNamespaceOnlyRef = false
 
   /**
    * Recursively collect all table aliases referenced in an expression
@@ -511,6 +533,13 @@ function analyzeWhereClause(
           const firstElement = expr.path[0]
           if (firstElement) {
             touchedSources.add(firstElement)
+
+            // If the path has only one element (just the namespace),
+            // this is a namespace-only reference that should not be pushed down
+            // This applies to ANY function, not just existence-checking functions
+            if (expr.path.length === 1) {
+              hasNamespaceOnlyRef = true
+            }
           }
         }
         break
@@ -537,6 +566,7 @@ function analyzeWhereClause(
   return {
     expression: clause,
     touchedSources,
+    hasNamespaceOnlyRef,
   }
 }
 
@@ -557,15 +587,15 @@ function groupWhereClauses(
 
   // Categorize each clause based on how many sources it touches
   for (const clause of analyzedClauses) {
-    if (clause.touchedSources.size === 1) {
-      // Single source clause - can be optimized
+    if (clause.touchedSources.size === 1 && !clause.hasNamespaceOnlyRef) {
+      // Single source clause without namespace-only references - can be optimized
       const source = Array.from(clause.touchedSources)[0]!
       if (!singleSource.has(source)) {
         singleSource.set(source, [])
       }
       singleSource.get(source)!.push(clause.expression)
-    } else if (clause.touchedSources.size > 1) {
-      // Multi-source clause - must stay in main query
+    } else if (clause.touchedSources.size > 1 || clause.hasNamespaceOnlyRef) {
+      // Multi-source clause or namespace-only reference - must stay in main query
       multiSource.push(clause.expression)
     }
     // Skip clauses that touch no sources (constants) - they don't need optimization
@@ -652,6 +682,20 @@ function applyOptimizations(
     // If optimized and no outer JOINs - don't keep (original behavior)
   }
 
+  // Combine multiple remaining WHERE clauses into a single clause to avoid
+  // multiple filter operations in the pipeline (performance optimization)
+  // First flatten any nested AND expressions to avoid and(and(...), ...)
+  const finalWhere: Array<Where> =
+    remainingWhereClauses.length > 1
+      ? [
+          combineWithAnd(
+            remainingWhereClauses.flatMap((clause) =>
+              splitAndClausesRecursive(getWhereExpression(clause))
+            )
+          ),
+        ]
+      : remainingWhereClauses
+
   // Create a completely new query object to ensure immutability
   const optimizedQuery: QueryIR = {
     // Copy all non-optimized fields as-is
@@ -670,8 +714,8 @@ function applyOptimizations(
     from: optimizedFrom,
     join: optimizedJoins,
 
-    // Only include WHERE clauses that weren't successfully optimized
-    where: remainingWhereClauses.length > 0 ? remainingWhereClauses : [],
+    // Include combined WHERE clauses
+    where: finalWhere.length > 0 ? finalWhere : [],
   }
 
   return optimizedQuery
@@ -760,14 +804,18 @@ function optimizeFromWithTracking(
     return new QueryRefClass(subQuery, from.alias)
   }
 
-  // Must be queryRef due to type system
-
   // SAFETY CHECK: Only check safety when pushing WHERE clauses into existing subqueries
   // We need to be careful about pushing WHERE clauses into subqueries that already have
   // aggregates, HAVING, or ORDER BY + LIMIT since that could change their semantics
   if (!isSafeToPushIntoExistingSubquery(from.query, whereClause, from.alias)) {
     // Return a copy without optimization to maintain immutability
     // Do NOT mark as optimized since we didn't actually optimize it
+    return new QueryRefClass(deepCopyQuery(from.query), from.alias)
+  }
+
+  // Skip pushdown when a clause references a field that only exists via a renamed
+  // projection inside the subquery; leaving it outside preserves the alias mapping.
+  if (referencesAliasWithRemappedSelect(from.query, whereClause, from.alias)) {
     return new QueryRefClass(deepCopyQuery(from.query), from.alias)
   }
 
@@ -918,6 +966,72 @@ function whereReferencesComputedSelectFields(
     if (alias !== outerAlias) continue
     if (computed.has(field)) return true
   }
+  return false
+}
+
+/**
+ * Detects whether a WHERE clause references the subquery alias through fields that
+ * are re-exposed under different names (renamed SELECT projections or fnSelect output).
+ * In those cases we keep the clause at the outer level to avoid alias remapping bugs.
+ * TODO: in future we should handle this by rewriting the clause to use the subquery's
+ * internal field references, but it likely needs a wider refactor to do cleanly.
+ */
+function referencesAliasWithRemappedSelect(
+  subquery: QueryIR,
+  whereClause: BasicExpression<boolean>,
+  outerAlias: string
+): boolean {
+  const refs = collectRefs(whereClause)
+  // Only care about clauses that actually reference the outer alias.
+  if (refs.every((ref) => ref.path[0] !== outerAlias)) {
+    return false
+  }
+
+  // fnSelect always rewrites the row shape, so alias-safe pushdown is impossible.
+  if (subquery.fnSelect) {
+    return true
+  }
+
+  const select = subquery.select
+  // Without an explicit SELECT the clause still refers to the original collection.
+  if (!select) {
+    return false
+  }
+
+  for (const ref of refs) {
+    const path = ref.path
+    // Need at least alias + field to matter.
+    if (path.length < 2) continue
+    if (path[0] !== outerAlias) continue
+
+    const projected = select[path[1]!]
+    // Unselected fields can't be remapped, so skip - only care about fields in the SELECT.
+    if (!projected) continue
+
+    // Non-PropRef projections are computed values; cannot push down.
+    if (!(projected instanceof PropRef)) {
+      return true
+    }
+
+    // If the projection is just the alias (whole row) without a specific field,
+    // we can't verify whether the field we're referencing is being preserved or remapped.
+    if (projected.path.length < 2) {
+      return true
+    }
+
+    const [innerAlias, innerField] = projected.path
+
+    // Safe only when the projection points straight back to the same alias or the
+    // underlying source alias and preserves the field name.
+    if (innerAlias !== outerAlias && innerAlias !== subquery.from.alias) {
+      return true
+    }
+
+    if (innerField !== path[1]) {
+      return true
+    }
+  }
+
   return false
 }
 

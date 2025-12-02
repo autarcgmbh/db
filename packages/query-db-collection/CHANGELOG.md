@@ -1,5 +1,449 @@
 # @tanstack/query-db-collection
 
+## 1.0.5
+
+### Patch Changes
+
+- fix: ensure ctx.meta.loadSubsetOptions type-safety works automatically ([#869](https://github.com/TanStack/db/pull/869))
+
+  The module augmentation for ctx.meta.loadSubsetOptions is now guaranteed to load automatically when importing from @tanstack/query-db-collection. Previously, users needed to explicitly import QueryCollectionMeta or use @ts-ignore to pass ctx.meta?.loadSubsetOptions to parseLoadSubsetOptions.
+
+  Additionally, QueryCollectionMeta is now an interface (instead of a type alias), enabling users to safely extend meta with custom properties via declaration merging:
+
+  ```typescript
+  declare module "@tanstack/query-db-collection" {
+    interface QueryCollectionMeta {
+      myCustomProperty: string
+    }
+  }
+  ```
+
+- Updated dependencies [[`c8a2c16`](https://github.com/TanStack/db/commit/c8a2c16aa528427d5ddd55cda4ee59a5cb369b5f)]:
+  - @tanstack/db@0.5.6
+
+## 1.0.4
+
+### Patch Changes
+
+- Fix data loss on component remount by implementing reference counting for QueryObserver lifecycle ([#870](https://github.com/TanStack/db/pull/870))
+
+  **What changed vs main:**
+
+  Previously, when live query subscriptions unsubscribed, there was no tracking of which rows were still needed by other active queries. This caused data loss during remounts.
+
+  This PR adds reference counting infrastructure to properly manage QueryObserver lifecycle:
+  1. Pass same predicates to `unloadSubset` that were passed to `loadSubset`
+  2. Use them to compute the queryKey (via `generateQueryKeyFromOptions`)
+  3. Use existing machinery (`queryToRows` map) to find rows that query loaded
+  4. Decrement the ref count
+  5. GC rows where count reaches 0 (no longer referenced by any active query)
+
+  **Impact:**
+  - Navigation back to previously loaded pages shows cached data immediately
+  - No unnecessary refetches during quick remounts (< gcTime)
+  - Multiple live queries with identical predicates correctly share QueryObservers
+  - Proper row-level cleanup when last subscriber leaves
+  - TanStack Query's cache lifecycle (gcTime) is fully respected
+  - No data leakage from in-flight requests when unsubscribing
+
+- Updated dependencies [[`077fc1a`](https://github.com/TanStack/db/commit/077fc1a418ca090d7533115888c09f3f609e36b2)]:
+  - @tanstack/db@0.5.5
+
+## 1.0.3
+
+### Patch Changes
+
+- Improved the type of the queryFn's ctx.meta property of the Query Collection to include the loadSubsetOptions ([#857](https://github.com/TanStack/db/pull/857))
+
+- Fixed bug where optimistic state leaked into syncedData when using writeInsert inside onInsert handlers. Previously, when syncing server-generated fields (like IDs or timestamps) using writeInsert within an onInsert handler, the QueryClient cache was updated with combined visible state (including optimistic changes), which triggered the query observer to write optimistic values back to syncedData. Now the cache is correctly updated with only server-confirmed state, ensuring syncedData maintains separation from optimistic state. ([#879](https://github.com/TanStack/db/pull/879))
+
+- Updated dependencies [[`acb3e4f`](https://github.com/TanStack/db/commit/acb3e4f1441e6872ca577e74d92ae2d77deb5938), [`464805d`](https://github.com/TanStack/db/commit/464805d96bad6d0fd741e48fbfc98e90dc58bebe), [`2c2e4db`](https://github.com/TanStack/db/commit/2c2e4dbd781d278347d73373f66d3c51c6388116), [`15c772f`](https://github.com/TanStack/db/commit/15c772f5e42e49000a2d775fd8e4cfda3418243f)]:
+  - @tanstack/db@0.5.4
+
+## 1.0.2
+
+### Patch Changes
+
+- Automatically append predicates to static queryKey in on-demand mode. ([#800](https://github.com/TanStack/db/pull/800))
+
+  When using a static `queryKey` with `syncMode: 'on-demand'`, the system now automatically appends serialized LoadSubsetOptions to create unique cache keys for different predicate combinations. This fixes an issue where all live queries with different predicates would share the same TanStack Query cache entry, causing data to be overwritten.
+
+  **Before:**
+
+  ```typescript
+  // This would cause conflicts between different queries
+  queryCollectionOptions({
+    queryKey: ["products"], // Static key
+    syncMode: "on-demand",
+    queryFn: async (ctx) => {
+      const { where, limit } = ctx.meta.loadSubsetOptions
+      return fetch(`/api/products?...`).then((r) => r.json())
+    },
+  })
+  ```
+
+  With different live queries filtering by `category='A'` and `category='B'`, both would share the same cache key `['products']`, causing the last query to overwrite the first.
+
+  **After:**
+  Static queryKeys now work correctly in on-demand mode! The system automatically creates unique cache keys:
+  - Query with `category='A'` → `['products', '{"where":{...A...}}']`
+  - Query with `category='B'` → `['products', '{"where":{...B...}}']`
+
+  **Key behaviors:**
+  - ✅ Static queryKeys now work correctly with on-demand mode (automatic serialization)
+  - ✅ Function-based queryKeys continue to work as before (no change)
+  - ✅ Eager mode with static queryKeys unchanged (no automatic serialization)
+  - ✅ Identical predicates correctly reuse the same cache entry
+
+  This makes the documentation example work correctly without requiring users to manually implement function-based queryKeys for predicate push-down.
+
+- Updated dependencies [[`846a830`](https://github.com/TanStack/db/commit/846a8309a243197245f4400a5d53cef5cec6d5d9), [`8e26dcf`](https://github.com/TanStack/db/commit/8e26dcfde600e4a18cd51fbe524560d60ab98d70)]:
+  - @tanstack/db@0.5.3
+
+## 1.0.1
+
+### Patch Changes
+
+- Temporarily remove `loadSubset` call deduplication in query collection. We need to revisit our approach to deduplication to ensure correctness. See https://github.com/TanStack/db/issues/836 for discussion on the proper implementation strategy. ([#840](https://github.com/TanStack/db/pull/840))
+
+- Updated dependencies [[`a83a818`](https://github.com/TanStack/db/commit/a83a8189514d22ca2fcdf34b9cb97206d3c03c38)]:
+  - @tanstack/db@0.5.1
+
+## 1.0.0
+
+### Patch Changes
+
+- Add expression helper utilities for parsing LoadSubsetOptions in queryFn. ([#763](https://github.com/TanStack/db/pull/763))
+
+  When using `syncMode: 'on-demand'`, TanStack DB now provides helper functions to easily parse where clauses, orderBy, and limit predicates into your API's format:
+  - `parseWhereExpression`: Parse where clauses with custom handlers for each operator
+  - `parseOrderByExpression`: Parse order by into simple array format
+  - `extractSimpleComparisons`: Extract simple AND-ed filters
+  - `parseLoadSubsetOptions`: Convenience function to parse all options at once
+  - `walkExpression`, `extractFieldPath`, `extractValue`: Lower-level helpers
+
+  **Example:**
+
+  ```typescript
+  import { parseLoadSubsetOptions } from "@tanstack/db"
+  // or from "@tanstack/query-db-collection" (re-exported for convenience)
+
+  queryFn: async (ctx) => {
+    const { where, orderBy, limit } = ctx.meta.loadSubsetOptions
+
+    const parsed = parseLoadSubsetOptions({ where, orderBy, limit })
+
+    // Build API request from parsed filters
+    const params = new URLSearchParams()
+    parsed.filters.forEach(({ field, operator, value }) => {
+      if (operator === "eq") {
+        params.set(field.join("."), String(value))
+      }
+    })
+
+    return fetch(`/api/products?${params}`).then((r) => r.json())
+  }
+  ```
+
+  This eliminates the need to manually traverse expression AST trees when implementing predicate push-down.
+
+- Handle pushed-down predicates ([#763](https://github.com/TanStack/db/pull/763))
+
+- Updated dependencies [[`243a35a`](https://github.com/TanStack/db/commit/243a35a632ee0aca20c3ee12ee2ac2929d8be11d), [`f9d11fc`](https://github.com/TanStack/db/commit/f9d11fc3d7297c61feb3c6876cb2f436edbb5b34), [`7aedf12`](https://github.com/TanStack/db/commit/7aedf12996a67ef64010bca0d78d51c919dd384f), [`28f81b5`](https://github.com/TanStack/db/commit/28f81b5165d0a9566f99c2b6cf0ad09533e1a2cb), [`28f81b5`](https://github.com/TanStack/db/commit/28f81b5165d0a9566f99c2b6cf0ad09533e1a2cb), [`f6ac7ea`](https://github.com/TanStack/db/commit/f6ac7eac50ae1334ddb173786a68c9fc732848f9), [`01093a7`](https://github.com/TanStack/db/commit/01093a762cf2f5f308edec7f466d1c3dabb5ea9f)]:
+  - @tanstack/db@0.5.0
+
+## 0.3.0
+
+### Minor Changes
+
+- Add QueryObserver state utilities and convert error utils to getters ([#742](https://github.com/TanStack/db/pull/742))
+
+  Exposes TanStack Query's QueryObserver state through QueryCollectionUtils, providing visibility into sync status beyond just error states. Also converts existing error state utilities from methods to getters for consistency with TanStack DB/Query patterns.
+
+  **Breaking Changes:**
+  - `lastError()`, `isError()`, and `errorCount()` are now getters instead of methods
+    - Before: `collection.utils.lastError()`
+    - After: `collection.utils.lastError`
+
+  **New Utilities:**
+  - `isFetching` - Check if query is currently fetching (initial or background)
+  - `isRefetching` - Check if query is refetching in background
+  - `isLoading` - Check if query is loading for first time
+  - `dataUpdatedAt` - Get timestamp of last successful data update
+  - `fetchStatus` - Get current fetch status ('fetching' | 'paused' | 'idle')
+
+  **Use Cases:**
+  - Show loading indicators during background refetches
+  - Implement "Last updated X minutes ago" UI patterns
+  - Better understanding of query sync behavior
+
+  **Example Usage:**
+
+  ```ts
+  const collection = queryCollectionOptions({
+    // ... config
+  })
+
+  // Check sync status
+  if (collection.utils.isFetching) {
+    console.log("Syncing with server...")
+  }
+
+  if (collection.utils.isRefetching) {
+    console.log("Background refresh in progress")
+  }
+
+  // Show last update time
+  const lastUpdate = new Date(collection.utils.dataUpdatedAt)
+  console.log(`Last synced: ${lastUpdate.toLocaleTimeString()}`)
+
+  // Check error state (now using getters)
+  if (collection.utils.isError) {
+    console.error("Sync failed:", collection.utils.lastError)
+    console.log(`Failed ${collection.utils.errorCount} times`)
+  }
+  ```
+
+### Patch Changes
+
+- Fix dependency bundling issues by moving @tanstack/db to peerDependencies ([#766](https://github.com/TanStack/db/pull/766))
+
+  **What Changed:**
+
+  Moved `@tanstack/db` from regular dependencies to peerDependencies in:
+  - `@tanstack/offline-transactions`
+  - `@tanstack/query-db-collection`
+
+  Removed `@opentelemetry/api` dependency from `@tanstack/offline-transactions`.
+
+  **Why:**
+
+  These extension packages incorrectly declared `@tanstack/db` as both a regular dependency AND a peerDependency simultaneously. This caused lock files to develop conflicting versions, resulting in multiple instances of `@tanstack/db` being installed in consuming applications.
+
+  The fix removes `@tanstack/db` from regular dependencies and keeps it only as a peerDependency. This ensures only one version of `@tanstack/db` is installed in the dependency tree, preventing version conflicts.
+
+  For local development, `@tanstack/db` remains in devDependencies so the packages can be built and tested independently.
+
+- Updated dependencies [[`6c55e16`](https://github.com/TanStack/db/commit/6c55e16a2545b479b1d47f548b6846d362573d45), [`7805afb`](https://github.com/TanStack/db/commit/7805afb7286b680168b336e77dd4de7dd1b6f06a), [`1367756`](https://github.com/TanStack/db/commit/1367756d0a68447405c5f5c1a3cca30ab0558d74)]:
+  - @tanstack/db@0.4.20
+
+## 0.2.42
+
+### Patch Changes
+
+- Updated dependencies [[`75470a8`](https://github.com/TanStack/db/commit/75470a8297f316b4817601b2ea92cb9b21cc7829)]:
+  - @tanstack/db@0.4.19
+
+## 0.2.41
+
+### Patch Changes
+
+- Updated dependencies [[`f416231`](https://github.com/TanStack/db/commit/f41623180c862b58b4fa6415383dfdb034f84ee9), [`b1b8299`](https://github.com/TanStack/db/commit/b1b82994cb9765225129b5a19be06e9369e3158d)]:
+  - @tanstack/db@0.4.18
+
+## 0.2.40
+
+### Patch Changes
+
+- Updated dependencies [[`49bcaa5`](https://github.com/TanStack/db/commit/49bcaa5557ba8d647c947811ed6e0c2450159d84)]:
+  - @tanstack/db@0.4.17
+
+## 0.2.39
+
+### Patch Changes
+
+- Updated dependencies [[`979a66f`](https://github.com/TanStack/db/commit/979a66f2f6eff0ffe44dfde7c67feea933ee6110), [`f8a979b`](https://github.com/TanStack/db/commit/f8a979ba3aa90ac7e85f7a065fc050bda6589b4b), [`cb25623`](https://github.com/TanStack/db/commit/cb256234c9cd8df7771808b147e5afc2be56f51f)]:
+  - @tanstack/db@0.4.16
+
+## 0.2.38
+
+### Patch Changes
+
+- Updated dependencies [[`6738247`](https://github.com/TanStack/db/commit/673824791bcfae04acf42fc35e5d6d8755adceb2)]:
+  - @tanstack/db@0.4.15
+
+## 0.2.37
+
+### Patch Changes
+
+- **Behavior change**: `utils.refetch()` now uses exact query key targeting (previously used prefix matching). This prevents unintended cascading refetches of related queries. For example, refetching `['todos', 'project-1']` will no longer trigger refetches of `['todos']` or `['todos', 'project-2']`. ([#552](https://github.com/TanStack/db/pull/552))
+
+  Additionally, `utils.refetch()` now bypasses `enabled: false` to support manual/imperative refetch patterns (matching TanStack Query hook behavior) and returns `QueryObserverResult` instead of `void` for better DX.
+
+## 0.2.36
+
+### Patch Changes
+
+- Updated dependencies [[`970616b`](https://github.com/TanStack/db/commit/970616b6db723d1716eecd5076417de5d6e9a884)]:
+  - @tanstack/db@0.4.14
+
+## 0.2.35
+
+### Patch Changes
+
+- Updated dependencies [[`3c9526c`](https://github.com/TanStack/db/commit/3c9526cd1fd80032ddddff32cf4a23dfa8376888)]:
+  - @tanstack/db@0.4.13
+
+## 0.2.34
+
+### Patch Changes
+
+- Fix queryCollectionOptions to respect QueryClient defaultOptions when not overridden ([#707](https://github.com/TanStack/db/pull/707))
+
+  Previously, when creating a QueryClient with defaultOptions (e.g., staleTime, retry, refetchOnWindowFocus), these options were ignored by queryCollectionOptions unless explicitly specified again in the collection config. This required duplicating configuration and prevented users from setting global defaults.
+
+  Now, queryCollectionOptions properly respects the QueryClient's defaultOptions as fallbacks. Options explicitly provided in queryCollectionOptions will still override the defaults.
+
+  Example - this now works as expected:
+
+  ```typescript
+  const dbQueryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        refetchOnWindowFocus: false,
+        staleTime: Infinity,
+      },
+    },
+  })
+
+  queryCollectionOptions({
+    id: "wallet-accounts",
+    queryKey: ["wallet-accounts"],
+    queryClient: dbQueryClient,
+    // staleTime: Infinity is now inherited from defaultOptions
+  })
+  ```
+
+- Fix writeDelete/writeUpdate validation to check synced store only ([#708](https://github.com/TanStack/db/pull/708))
+
+  Fixed issue where calling `writeDelete()` or `writeUpdate()` inside mutation handlers (like `onDelete`) would throw errors when optimistic updates were active. These write operations now correctly validate against the synced store only, not the combined view (synced + optimistic).
+
+  This allows patterns like calling `writeDelete()` inside an `onDelete` handler to work correctly, enabling users to write directly to the synced store while the mutation is being persisted to the backend.
+
+  Fixes #706
+
+## 0.2.33
+
+### Patch Changes
+
+- Updated dependencies [[`8b29841`](https://github.com/TanStack/db/commit/8b298417964340bbac5ad08a831766f8f1497477), [`8187c6d`](https://github.com/TanStack/db/commit/8187c6d69c4b498e306ac2eb5fc7115e4f8193a5)]:
+  - @tanstack/db@0.4.12
+
+## 0.2.32
+
+### Patch Changes
+
+- Updated dependencies [[`5566b26`](https://github.com/TanStack/db/commit/5566b26100abdae9b4a041f048aeda1dd726e904)]:
+  - @tanstack/db@0.4.11
+
+## 0.2.31
+
+### Patch Changes
+
+- Updated dependencies [[`63aa8ef`](https://github.com/TanStack/db/commit/63aa8ef8b09960ce0f93e068d41b37fb0503a21a), [`b0687ab`](https://github.com/TanStack/db/commit/b0687ab4c1476362d7a25e3c1704ab0fb0385455)]:
+  - @tanstack/db@0.4.10
+
+## 0.2.30
+
+### Patch Changes
+
+- Updated dependencies [[`e52be92`](https://github.com/TanStack/db/commit/e52be92ce16b09a095b4b9baf7ac2cf708146f47), [`4a7c44a`](https://github.com/TanStack/db/commit/4a7c44a723223ade4e226745eadffead671fff13), [`ee61bb6`](https://github.com/TanStack/db/commit/ee61bb61f76ca510f113e96baa090940719aac40)]:
+  - @tanstack/db@0.4.9
+
+## 0.2.29
+
+### Patch Changes
+
+- Updated dependencies [[`d9ae7b7`](https://github.com/TanStack/db/commit/d9ae7b76b8ab30fd55fe835531974eee333dd450), [`44555b7`](https://github.com/TanStack/db/commit/44555b733a1a4d38d8126bf8da51d4b44f898298)]:
+  - @tanstack/db@0.4.8
+
+## 0.2.28
+
+### Patch Changes
+
+- Updated dependencies [[`6692aad`](https://github.com/TanStack/db/commit/6692aad4267e127b71ce595529080d6fc0aa2066)]:
+  - @tanstack/db@0.4.7
+
+## 0.2.27
+
+### Patch Changes
+
+- Updated dependencies [[`dd6cdf7`](https://github.com/TanStack/db/commit/dd6cdf7ea62d91bfb12ea8d25bdd25549259c113), [`c30a20b`](https://github.com/TanStack/db/commit/c30a20b1df39b34f18d0aa7c7b901a27fb963f36)]:
+  - @tanstack/db@0.4.6
+
+## 0.2.26
+
+### Patch Changes
+
+- Updated dependencies [[`7556fb6`](https://github.com/TanStack/db/commit/7556fb6f888b5bdc830fe6448eb3368efeb61988)]:
+  - @tanstack/db@0.4.5
+
+## 0.2.25
+
+### Patch Changes
+
+- Fix collection.preload() hanging when called without startSync or subscribers. The QueryObserver now subscribes immediately when sync starts (from preload(), startSync, or first subscriber), while maintaining the staleTime behavior by dynamically unsubscribing when subscriber count drops to zero. ([#635](https://github.com/TanStack/db/pull/635))
+
+- Updated dependencies [[`56b870b`](https://github.com/TanStack/db/commit/56b870b3e63f8010b6eeebea87893b10c75a5888), [`f623990`](https://github.com/TanStack/db/commit/f62399062e4db61426ddfbbbe324c48cab2513dd), [`5f43d5f`](https://github.com/TanStack/db/commit/5f43d5f7f47614be8e71856ceb0f91733d9be627), [`05776f5`](https://github.com/TanStack/db/commit/05776f52a8ce4fe41b34fc8cace2046afc42835c), [`d27d32a`](https://github.com/TanStack/db/commit/d27d32aceb7f8fcabc07dcf1b55a84a605d2f23f)]:
+  - @tanstack/db@0.4.4
+
+## 0.2.24
+
+### Patch Changes
+
+- Updated dependencies [[`32f2212`](https://github.com/TanStack/db/commit/32f221278e2a684f3f4e1e2ace1ca98f5ecc858a)]:
+  - @tanstack/db@0.4.3
+
+## 0.2.23
+
+### Patch Changes
+
+- Fix `staleTime` behavior by automatically subscribing/unsubscribing from TanStack Query based on collection subscriber count. ([#462](https://github.com/TanStack/db/pull/462))
+
+  Previously, query collections kept a QueryObserver permanently subscribed, which broke TanStack Query's `staleTime` and window-focus refetch behavior. Now the QueryObserver properly goes inactive when the collection has no subscribers, restoring normal `staleTime`/`gcTime` semantics.
+
+- query-collection now supports a `select` function to transform raw query results into an array of items. This is useful for APIs that return data with metadata or nested structures, ensuring metadata remains cached while collections work with the unwrapped array. ([#551](https://github.com/TanStack/db/pull/551))
+
+- Updated dependencies [[`51c6bc5`](https://github.com/TanStack/db/commit/51c6bc58244ed6a3ac853e7e6af7775b33d6b65a), [`248e2c6`](https://github.com/TanStack/db/commit/248e2c6db8e9df8cf2cb225100e4ba9cb67cd534), [`ce7e2b2`](https://github.com/TanStack/db/commit/ce7e2b209ed882baa29ec86f89f1b527d6580e0b), [`1b832ff`](https://github.com/TanStack/db/commit/1b832ff9ec236e7dbe9256803e2ba12b4c9b9a30)]:
+  - @tanstack/db@0.4.2
+
+## 0.2.22
+
+### Patch Changes
+
+- Updated dependencies [[`8cd0876`](https://github.com/TanStack/db/commit/8cd0876b50bc7c1a614365318d5e74c2f32a0f80)]:
+  - @tanstack/db@0.4.1
+
+## 0.2.21
+
+### Patch Changes
+
+- Refactor the main Collection class into smaller classes to make it easier to maintain. ([#560](https://github.com/TanStack/db/pull/560))
+
+- Updated dependencies [[`2f87216`](https://github.com/TanStack/db/commit/2f8721630e06331ca8bb2f962fbb283341103a58), [`ac6250a`](https://github.com/TanStack/db/commit/ac6250a879e95718e8d911732c10fb3388569f0f), [`2f87216`](https://github.com/TanStack/db/commit/2f8721630e06331ca8bb2f962fbb283341103a58)]:
+  - @tanstack/db@0.4.0
+
+## 0.2.20
+
+### Patch Changes
+
+- Updated dependencies [[`cacfca2`](https://github.com/TanStack/db/commit/cacfca2d1b430c34a05202128fd3affa4bff54d6)]:
+  - @tanstack/db@0.3.2
+
+## 0.2.19
+
+### Patch Changes
+
+- Updated dependencies [[`5f51f35`](https://github.com/TanStack/db/commit/5f51f35d2c9543766a00cc5eea1374c62798b34e)]:
+  - @tanstack/db@0.3.1
+
+## 0.2.18
+
+### Patch Changes
+
+- Updated dependencies [[`c557a14`](https://github.com/TanStack/db/commit/c557a1488650ea9081b671a4ac278d55c59ac9cc), [`b5c87f7`](https://github.com/TanStack/db/commit/b5c87f71dbb534e4f1c660cf010e2cb6c0446ec5)]:
+  - @tanstack/db@0.3.0
+
 ## 0.2.17
 
 ### Patch Changes

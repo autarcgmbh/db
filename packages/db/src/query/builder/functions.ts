@@ -53,10 +53,10 @@ type ExtractType<T> =
 // Helper type to determine aggregate return type based on input nullability
 type AggregateReturnType<T> =
   ExtractType<T> extends infer U
-    ? U extends number | undefined | null
+    ? U extends number | undefined | null | Date | bigint
       ? Aggregate<U>
-      : Aggregate<number | undefined | null>
-    : Aggregate<number | undefined | null>
+      : Aggregate<number | undefined | null | Date | bigint>
+    : Aggregate<number | undefined | null | Date | bigint>
 
 // Helper type to determine string function return type based on input nullability
 type StringFunctionReturnType<T> =
@@ -337,3 +337,42 @@ export const comparisonFunctions = [
   `like`,
   `ilike`,
 ] as const
+
+/**
+ * All supported operator names in TanStack DB expressions
+ */
+export const operators = [
+  // Comparison operators
+  `eq`,
+  `gt`,
+  `gte`,
+  `lt`,
+  `lte`,
+  `in`,
+  `like`,
+  `ilike`,
+  // Logical operators
+  `and`,
+  `or`,
+  `not`,
+  // Null checking
+  `isNull`,
+  `isUndefined`,
+  // String functions
+  `upper`,
+  `lower`,
+  `length`,
+  `concat`,
+  // Numeric functions
+  `add`,
+  // Utility functions
+  `coalesce`,
+  // Aggregate functions
+  `count`,
+  `avg`,
+  `sum`,
+  `min`,
+  `max`,
+] as const
+
+export type OperatorName = (typeof operators)[number]
