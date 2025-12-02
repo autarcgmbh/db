@@ -911,11 +911,23 @@ function createElectricSync<T extends Row<unknown>>(
       // Load from persistance adapter if persistence is configured
       if (persistence) {
         try {
+          const persistedData = persistence.read()
+          const hasPersistedData =
+            !!persistedData?.value &&
+            Object.keys(persistedData.value).length > 0
+
           persistence.loadSnapshotInto(
             begin,
             (op) => write({ ...op, metadata: {} }),
             commit
           )
+
+          // In on-demand mode, mark the collection as ready immediately after loading
+          // from persistence since on-demand works with partial/incremental data
+          // and doesn't require waiting for server sync to be usable
+          if (syncMode === `on-demand` && hasPersistedData) {
+            markReady()
+          }
         } catch (e) {
           console.warn(`[ElectricPersistence] load error`, e)
         }
