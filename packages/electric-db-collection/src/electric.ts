@@ -1053,7 +1053,6 @@ function createElectricSync<T extends Row<unknown>>(
       unsubscribeStream = stream.subscribe((messages: Array<Message<T>>) => {
         let hasUpToDate = false
         let hasSnapshotEnd = false
-        let hasSyncedChanges = false
 
         for (const message of messages) {
           // Add message to current batch buffer (for race condition handling)
@@ -1129,7 +1128,6 @@ function createElectricSync<T extends Row<unknown>>(
               newSnapshots.push(parseSnapshotMessage(message))
             }
             hasSnapshotEnd = true
-            if (persistenceConfig) hasSyncedChanges = true
           } else if (isUpToDateMessage(message)) {
             hasUpToDate = true
           } else if (isMustRefetchMessage(message)) {
@@ -1161,6 +1159,9 @@ function createElectricSync<T extends Row<unknown>>(
         }
 
         if (hasUpToDate || hasSnapshotEnd) {
+          // Track whether we actually committed a transaction
+          let didCommit = false
+
           // PROGRESSIVE MODE: Atomic swap on first up-to-date
           if (isBufferingInitialSync() && hasUpToDate) {
             debug(
@@ -1198,6 +1199,7 @@ function createElectricSync<T extends Row<unknown>>(
 
             // Commit the atomic swap
             commit()
+            didCommit = true
 
             // Exit buffering phase by marking that we've received up-to-date
             // isBufferingInitialSync() will now return false
@@ -1217,10 +1219,13 @@ function createElectricSync<T extends Row<unknown>>(
             if (transactionStarted && shouldCommit) {
               commit()
               transactionStarted = false
+              didCommit = true
             }
           }
 
-          if (persistence && hasSyncedChanges) {
+          // Persist after we've committed a transaction
+          // (didCommit implies there were changes worth persisting)
+          if (persistence && didCommit) {
             persistence.saveCollectionSnapshot(collection, stream)
           }
 
