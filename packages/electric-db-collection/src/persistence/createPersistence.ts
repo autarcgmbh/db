@@ -15,6 +15,12 @@ export interface ElectricPersistenceConfig {
    * Can be any object that implements the Storage interface (e.g., sessionStorage)
    */
   storage?: StorageApi
+
+  /**
+   * Callback which triggers after data has been loaded from the persistence adapter.
+   * Receives markReady function to allow marking the collection ready (e.g., when offline).
+   */
+  onPersistenceLoaded?: (params: { markReady: () => void }) => void
 }
 
 // Envelope we persist to storage
@@ -23,11 +29,6 @@ type PersistedEnvelope<T> = {
   value: Record<string, T>
   lastOffset?: number
   shapeHandle?: string
-}
-
-export interface ElectricPersistenceConfig {
-  storageKey: string
-  storage?: StorageApi
 }
 
 export function createPersistence<T>(cfg: ElectricPersistenceConfig) {

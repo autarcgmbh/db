@@ -737,19 +737,15 @@ export function electricCollectionOptions<T extends Row<unknown>>(
         >
       ) => {
         // Validate that all values in the transaction can be JSON serialized (if persistence enabled)
-        if (config.persistence) {
+        if (config.persistence)
           params.transaction.mutations.forEach((m) =>
             validateJsonSerializable(m.modified, `insert`)
           )
-        }
         const handlerResult = await config.onInsert!(params)
         await processMatchingStrategy(handlerResult)
 
-        if (persistence) {
-          // called outside stream -> snapshot rows, keep prior cursor
-          persistence.saveCollectionSnapshot(params.collection)
-        }
-
+        // called outside stream -> snapshot rows, keep prior cursor
+        if (persistence) persistence.saveCollectionSnapshot(params.collection)
         return handlerResult
       }
     : undefined
@@ -909,9 +905,10 @@ function createElectricSync<T extends Row<unknown>>(
       const { begin, write, commit, markReady, truncate, collection } = params
 
       // Load from persistance adapter if persistence is configured
+      let persistedData // let us just read once, from the adapter.
       if (persistence) {
+        persistedData = persistence.read()
         try {
-          const persistedData = persistence.read()
           const hasPersistedData =
             !!persistedData?.value &&
             Object.keys(persistedData.value).length > 0
@@ -925,9 +922,9 @@ function createElectricSync<T extends Row<unknown>>(
           // In on-demand mode, mark the collection as ready immediately after loading
           // from persistence since on-demand works with partial/incremental data
           // and doesn't require waiting for server sync to be usable
-          if (syncMode === `on-demand` && hasPersistedData) {
-            markReady()
-          }
+          if (syncMode === `on-demand` && hasPersistedData) markReady()
+          if (persistenceConfig.onPersistenceLoaded)
+            persistenceConfig.onPersistenceLoaded({ markReady })
         } catch (e) {
           console.warn(`[ElectricPersistence] load error`, e)
         }
@@ -983,7 +980,7 @@ function createElectricSync<T extends Row<unknown>>(
       })
 
       // Read from persistence if available
-      const prev = persistence?.read()
+      const prev = persistedData
 
       const computedOffset: Offset | undefined = (() => {
         const offset = shapeOptions.offset
