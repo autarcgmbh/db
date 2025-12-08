@@ -20,7 +20,7 @@ export interface ElectricPersistenceConfig {
    * Callback which triggers after data has been loaded from the persistence adapter.
    * Receives markReady function to allow marking the collection ready (e.g., when offline).
    */
-  onPersistenceLoaded?: (params: { markReady: () => void }) => void
+  onPersistenceLoaded?: () => void
 }
 
 // Envelope we persist to storage
@@ -29,6 +29,7 @@ type PersistedEnvelope<T> = {
   value: Record<string, T>
   lastOffset?: number
   shapeHandle?: string
+  isReady?: boolean
 }
 
 export function createPersistence<T>(cfg: ElectricPersistenceConfig) {
@@ -79,12 +80,20 @@ export function createPersistence<T>(cfg: ElectricPersistenceConfig) {
     // 2) load previous envelope (to preserve cursor when no stream present)
     const prev = read() ?? { v: 1, value: {} as Record<string, T> }
 
-    // 3) only advance cursor if we’re called from the stream
+    // 3) only advance cursor if we're called from the stream
     const lastOffset =
       (stream?.lastOffset as number | undefined) ?? prev.lastOffset
     const shapeHandle = stream?.shapeHandle ?? prev.shapeHandle
 
-    const next: PersistedEnvelope<T> = { v: 1, value, lastOffset, shapeHandle }
+    // 4) Capture isReady status from collection, have to write isReady so compare to true so it's false if not
+    const isReady = collection.isReady() || false
+    const next: PersistedEnvelope<T> = {
+      v: 1,
+      value,
+      lastOffset,
+      shapeHandle,
+      isReady,
+    }
     write(next)
   }
 

@@ -904,10 +904,14 @@ function createElectricSync<T extends Row<unknown>>(
     sync: (params: Parameters<SyncConfig<T>[`sync`]>[0]) => {
       const { begin, write, commit, markReady, truncate, collection } = params
 
-      // Load from persistance adapter if persistence is configured
-      let persistedData // let us just read once, from the adapter.
+      // Load from persistence adapter if persistence is configured
+      // Only keep the lightweight metadata (lastOffset, shapeHandle) after loading
+      // to avoid keeping the heavy collection data in memory
+      let persistedMetadata:
+        | { lastOffset?: unknown; shapeHandle?: string }
+        | undefined
       if (persistence) {
-        persistedData = persistence.read()
+        const persistedData = persistence.read()
         try {
           const hasPersistedData =
             !!persistedData?.value &&
@@ -921,10 +925,20 @@ function createElectricSync<T extends Row<unknown>>(
 
           // In on-demand mode, mark the collection as ready immediately after loading
           // from persistence since on-demand works with partial/incremental data
-          // and doesn't require waiting for server sync to be usable
-          if (syncMode === `on-demand` && hasPersistedData) markReady()
+          // and doesn't require waiting for server sync to be usable.
+          // Also mark ready if the collection was previously marked ready when persisted.
+          const hasPersistedDataOnDemand =
+            syncMode === `on-demand` && hasPersistedData
+          if (hasPersistedDataOnDemand || persistedData?.isReady) markReady()
           if (persistenceConfig.onPersistenceLoaded)
-            persistenceConfig.onPersistenceLoaded({ markReady })
+            persistenceConfig.onPersistenceLoaded()
+
+          // Extract only the lightweight metadata we need for stream configuration
+          // This allows the heavy `value` data to be garbage collected
+          persistedMetadata = {
+            lastOffset: persistedData?.lastOffset,
+            shapeHandle: persistedData?.shapeHandle,
+          }
         } catch (e) {
           console.warn(`[ElectricPersistence] load error`, e)
         }
@@ -979,20 +993,17 @@ function createElectricSync<T extends Row<unknown>>(
         })
       })
 
-      // Read from persistence if available
-      const prev = persistedData
-
       const computedOffset: Offset | undefined = (() => {
         const offset = shapeOptions.offset
         if (offset != null) return offset
-        const lastOffset = prev?.lastOffset as Offset | undefined
+        const lastOffset = persistedMetadata?.lastOffset as Offset | undefined
         if (lastOffset != null) return lastOffset
         if (syncMode === `on-demand`) return `now`
         return undefined
       })()
 
       const computedHandle: string | undefined =
-        shapeOptions.handle ?? prev?.shapeHandle
+        shapeOptions.handle ?? persistedMetadata?.shapeHandle
 
       const stream = new ShapeStream({
         ...shapeOptions,
@@ -1222,9 +1233,8 @@ function createElectricSync<T extends Row<unknown>>(
 
           // Persist after we've committed a transaction
           // (didCommit implies there were changes worth persisting)
-          if (persistence && didCommit) {
+          if (persistence && didCommit)
             persistence.saveCollectionSnapshot(collection, stream)
-          }
 
           // Clear the current batch buffer since we're now up-to-date
           currentBatchMessages.setState(() => [])
@@ -1232,6 +1242,10 @@ function createElectricSync<T extends Row<unknown>>(
           if (hasUpToDate || (hasSnapshotEnd && syncMode === `on-demand`)) {
             // Mark the collection as ready now that sync is up to date
             wrappedMarkReady(isBufferingInitialSync())
+
+            // Persist isReady state after marking ready
+            if (persistence)
+              persistence.saveCollectionSnapshot(collection, stream)
           }
 
           // Track that we've received the first up-to-date for progressive mode
