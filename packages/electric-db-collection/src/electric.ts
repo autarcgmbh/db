@@ -910,17 +910,34 @@ function createElectricSync<T extends Row<unknown>>(
       let persistedMetadata:
         | { lastOffset?: unknown; shapeHandle?: string }
         | undefined
+
+      debug(`persistence: exists ${persistence}`)
       if (persistence) {
+        debug(
+          `${collectionId ? `[${collectionId}] ` : ``}persistence: starting load from storage`
+        )
         const persistedData = persistence.read()
         try {
           const hasPersistedData =
             !!persistedData?.value &&
             Object.keys(persistedData.value).length > 0
 
+          debug(
+            `${collectionId ? `[${collectionId}] ` : ``}persistence: hasPersistedData=%s, isReady=%s, syncMode=%s`,
+            hasPersistedData,
+            persistedData?.isReady ?? false,
+            syncMode
+          )
+
           persistence.loadSnapshotInto(
             begin,
             (op) => write({ ...op, metadata: {} }),
             commit
+          )
+
+          debug(
+            `${collectionId ? `[${collectionId}] ` : ``}persistence: after loadSnapshotInto, collection.state.size=%d`,
+            collection.state.size
           )
 
           // In on-demand mode, mark the collection as ready immediately after loading
@@ -929,7 +946,20 @@ function createElectricSync<T extends Row<unknown>>(
           // Also mark ready if the collection was previously marked ready when persisted.
           const hasPersistedDataOnDemand =
             syncMode === `on-demand` && hasPersistedData
-          if (hasPersistedDataOnDemand || persistedData?.isReady) markReady()
+
+          if (hasPersistedDataOnDemand || persistedData?.isReady) {
+            debug(
+              `${collectionId ? `[${collectionId}] ` : ``}persistence: marking ready (hasPersistedDataOnDemand=%s, persistedData.isReady=%s)`,
+              hasPersistedDataOnDemand,
+              persistedData.isReady ?? false
+            )
+            markReady()
+          } else {
+            debug(
+              `${collectionId ? `[${collectionId}] ` : ``}persistence: not marking ready yet, waiting for sync`
+            )
+          }
+
           if (persistenceConfig.onPersistenceLoaded)
             persistenceConfig.onPersistenceLoaded()
 
@@ -939,26 +969,54 @@ function createElectricSync<T extends Row<unknown>>(
             lastOffset: persistedData?.lastOffset,
             shapeHandle: persistedData?.shapeHandle,
           }
+          debug(
+            `${collectionId ? `[${collectionId}] ` : ``}persistence: load complete, offset=%s, handle=%s`,
+            persistedMetadata.lastOffset ?? `none`,
+            persistedMetadata.shapeHandle ?? `none`
+          )
         } catch (e) {
+          debug(
+            `${collectionId ? `[${collectionId}] ` : ``}persistence: load error %o`,
+            e
+          )
           console.warn(`[ElectricPersistence] load error`, e)
         }
+      } else {
+        debug(
+          `${collectionId ? `[${collectionId}] ` : ``}persistence: not configured, skipping load`
+        )
       }
 
       // Wrap markReady to wait for test hook in progressive mode
       let progressiveReadyGate: Promise<void> | null = null
       const wrappedMarkReady = (isBuffering: boolean) => {
+        debug(
+          `${collectionId ? `[${collectionId}] ` : ``}wrappedMarkReady called: isBuffering=%s, syncMode=%s, hasTestHook=%s`,
+          isBuffering,
+          syncMode,
+          !!testHooks?.beforeMarkingReady
+        )
         // Only create gate if we're in buffering phase (first up-to-date)
         if (
           isBuffering &&
           syncMode === `progressive` &&
           testHooks?.beforeMarkingReady
         ) {
+          debug(
+            `${collectionId ? `[${collectionId}] ` : ``}wrappedMarkReady: waiting for test hook before marking ready`
+          )
           // Create a new gate promise for this sync cycle
           progressiveReadyGate = testHooks.beforeMarkingReady()
           progressiveReadyGate.then(() => {
+            debug(
+              `${collectionId ? `[${collectionId}] ` : ``}wrappedMarkReady: test hook resolved, marking ready`
+            )
             markReady()
           })
         } else {
+          debug(
+            `${collectionId ? `[${collectionId}] ` : ``}wrappedMarkReady: marking ready immediately`
+          )
           // No hook, not buffering, or already past first up-to-date
           markReady()
         }
@@ -1018,6 +1076,10 @@ function createElectricSync<T extends Row<unknown>>(
           // Note that Electric sends a 409 error on a `must-refetch` message, but the
           // ShapeStream handled this and it will not reach this handler, therefor
           // this markReady will not be triggers by a `must-refetch`.
+          debug(
+            `${collectionId ? `[${collectionId}] ` : ``}stream error, marking ready to unblock preload: %o`,
+            errorParams
+          )
           markReady()
 
           if (shapeOptions.onError) {
@@ -1241,6 +1303,10 @@ function createElectricSync<T extends Row<unknown>>(
 
           if (hasUpToDate || (hasSnapshotEnd && syncMode === `on-demand`)) {
             // Mark the collection as ready now that sync is up to date
+            debug(
+              `${collectionId ? `[${collectionId}] ` : ``}sync: received %s, calling wrappedMarkReady`,
+              hasUpToDate ? `up-to-date` : `snapshot-end`
+            )
             wrappedMarkReady(isBufferingInitialSync())
 
             // Persist isReady state after marking ready

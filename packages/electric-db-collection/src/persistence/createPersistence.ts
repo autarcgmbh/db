@@ -1,4 +1,7 @@
+import DebugModule from "debug"
 import type { StorageApi } from "./persistenceAdapter"
+
+const debug = DebugModule.debug(`ts/db:electric:persistence`)
 
 /**
  * Configuration interface for Electric collection persistence
@@ -51,8 +54,26 @@ export function createPersistence<T>(cfg: ElectricPersistenceConfig) {
   }
 
   const read = (): PersistedEnvelope<T> | null => {
-    if (!storage) return null
-    return safeParse(storage.getItem(key))
+    if (!storage) {
+      debug(`[%s] read: no storage available`, key)
+      return null
+    }
+    const raw = storage.getItem(key)
+    const parsed = safeParse(raw)
+    if (parsed) {
+      const itemCount = Object.keys(parsed.value).length
+      debug(
+        `[%s] read: found %d items, offset=%s, handle=%s, isReady=%s`,
+        key,
+        itemCount,
+        parsed.lastOffset ?? `none`,
+        parsed.shapeHandle ?? `none`,
+        parsed.isReady ?? false
+      )
+    } else {
+      debug(`[%s] read: no persisted data found`, key)
+    }
+    return parsed
   }
 
   const write = (next: PersistedEnvelope<T>) => {
@@ -102,15 +123,24 @@ export function createPersistence<T>(cfg: ElectricPersistenceConfig) {
     writeOp: (op: { type: `insert`; value: T }) => void,
     commit: () => void
   ) => {
+    debug(`[%s] loadSnapshotInto: starting`, key)
     const env = read()
-    if (!env?.value) return
+    if (!env?.value) {
+      debug(`[%s] loadSnapshotInto: no envelope or value, skipping`, key)
+      return
+    }
     const entries = Object.entries(env.value)
-    if (!entries.length) return
+    if (!entries.length) {
+      debug(`[%s] loadSnapshotInto: envelope empty, skipping`, key)
+      return
+    }
+    debug(`[%s] loadSnapshotInto: loading %d entries into collection`, key, entries.length)
     begin()
     for (const [, row] of entries) {
       writeOp({ type: `insert`, value: row })
     }
     commit()
+    debug(`[%s] loadSnapshotInto: completed`, key)
   }
 
   return {
