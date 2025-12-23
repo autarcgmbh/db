@@ -1,7 +1,7 @@
 {
   "name": "@autarcgmbh/electric-db-collection",
   "description": "ElectricSQL collection for TanStack DB",
-  "version": "1.7.20",
+  "version": "1.7.21",
   "devDependencies": {
     "@types/debug": "^4.1.12",
     "@types/pg": "^8.15.6",
