@@ -1,5 +1,5 @@
-import DebugModule from "debug"
-import type { StorageApi } from "./persistenceAdapter"
+import DebugModule from 'debug'
+import type { StorageApi } from './persistenceAdapter'
 
 const debug = DebugModule.debug(`ts/db:electric:persistence`)
 
@@ -18,6 +18,14 @@ export interface ElectricPersistenceConfig {
    * Can be any object that implements the Storage interface (e.g., sessionStorage)
    */
   storage?: StorageApi
+
+  /**
+   * Optional pre-loaded cache data. When provided, initial reads will use this cache
+   * instead of calling storage.getItem(). This is useful for async storage adapters
+   * (like OPFS) that need to load data before the collection is created.
+   * The Map keys are storage keys and values are the JSON strings.
+   */
+  cache?: Map<string, string>
 
   /**
    * Callback which triggers after data has been loaded from the persistence adapter.
@@ -39,6 +47,7 @@ export function createPersistence<T>(cfg: ElectricPersistenceConfig) {
   const key = cfg.storageKey
   const storage =
     cfg.storage || (typeof window !== `undefined` ? window.localStorage : null)
+  const cache = cfg.cache
 
   const safeParse = (raw: string | null): PersistedEnvelope<T> | null => {
     if (!raw) return null
@@ -54,6 +63,28 @@ export function createPersistence<T>(cfg: ElectricPersistenceConfig) {
   }
 
   const read = (): PersistedEnvelope<T> | null => {
+    // Try cache first if available (for async storage adapters like OPFS)
+    if (cache) {
+      const cachedRaw = cache.get(key)
+      if (cachedRaw) {
+        const parsed = safeParse(cachedRaw)
+        if (parsed) {
+          const itemCount = Object.keys(parsed.value).length
+          debug(
+            `[%s] read from cache: found %d items, offset=%s, handle=%s, isReady=%s`,
+            key,
+            itemCount,
+            parsed.lastOffset ?? `none`,
+            parsed.shapeHandle ?? `none`,
+            parsed.isReady ?? false,
+          )
+        }
+        return parsed
+      }
+      debug(`[%s] read: no data in cache`, key)
+    }
+
+    // Fall back to storage
     if (!storage) {
       debug(`[%s] read: no storage available`, key)
       return null
@@ -68,7 +99,7 @@ export function createPersistence<T>(cfg: ElectricPersistenceConfig) {
         itemCount,
         parsed.lastOffset ?? `none`,
         parsed.shapeHandle ?? `none`,
-        parsed.isReady ?? false
+        parsed.isReady ?? false,
       )
     } else {
       debug(`[%s] read: no persisted data found`, key)
@@ -121,7 +152,7 @@ export function createPersistence<T>(cfg: ElectricPersistenceConfig) {
   const loadSnapshotInto = (
     begin: () => void,
     writeOp: (op: { type: `insert`; value: T }) => void,
-    commit: () => void
+    commit: () => void,
   ) => {
     debug(`[%s] loadSnapshotInto: starting`, key)
     const env = read()
@@ -134,7 +165,11 @@ export function createPersistence<T>(cfg: ElectricPersistenceConfig) {
       debug(`[%s] loadSnapshotInto: envelope empty, skipping`, key)
       return
     }
-    debug(`[%s] loadSnapshotInto: loading %d entries into collection`, key, entries.length)
+    debug(
+      `[%s] loadSnapshotInto: loading %d entries into collection`,
+      key,
+      entries.length,
+    )
     begin()
     for (const [, row] of entries) {
       writeOp({ type: `insert`, value: row })
